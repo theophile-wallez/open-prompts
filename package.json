@@ -31,7 +31,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "version": "node scripts/version.mjs sync && git add .claude-plugin/plugin.json gemini-extension.json"
   },
   "homepage": "https://github.com/theophile-wallez/open-prompts",
   "repository": {

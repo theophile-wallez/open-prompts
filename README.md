@@ -1,5 +1,6 @@
 # Open Prompts
 
+[![CI](https://github.com/theophile-wallez/open-prompts/actions/workflows/ci.yml/badge.svg)](https://github.com/theophile-wallez/open-prompts/actions/workflows/ci.yml)
 [![Open Prompts](https://img.shields.io/badge/prompts-open-2ea44f)](prompts/)
 
 **Commit the prompts behind your code.**
@@ -151,7 +152,7 @@ Models are recorded exactly as each agent reports them. Through Amazon Bedrock, 
 - **Redaction rules**: add a case to [`test/redact.test.mjs`](test/redact.test.mjs) with the pattern in [`src/redact.mjs`](src/redact.mjs).
 - **The specification**: open an issue before proposing a change to the format.
 
-Run the tests with `npm test`. There are no dependencies.
+Run the tests with `npm test`. There are no dependencies. CI runs them on Linux and macOS with Node 18, 20, 22 and 24. Releases are described in [RELEASING.md](RELEASING.md).
 
 ## License
 
