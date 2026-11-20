@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+
+  checks:
+    name: Package checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Versions match in package.json and the plugin manifests
+        run: node scripts/version.mjs check
+      - name: This repository's own prompt files follow the specification
+        run: node bin/open-prompts validate
+      - name: The package contains what it needs
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const files = JSON.parse(require("fs").readFileSync("pack.json", "utf8"))[0].files.map((f) => f.path);
+            const required = ["bin/open-prompts", "src/cli.mjs", "src/opencode-plugin.mjs", "hooks/hooks.json", "hooks/claude-code.json", ".claude-plugin/plugin.json", "gemini-extension.json", "schema/record.v1.json", "SPEC.md"];
+            const missing = required.filter((file) => !files.includes(file));
+            if (missing.length) { console.error("Missing from the package:", missing.join(", ")); process.exit(1); }
+            console.log(files.length + " files, all required files present.");
+          '
