@@ -1,0 +1,14 @@
+{
+  "name": "open-prompts",
+  "version": "0.1.0",
+  "description": "Records every prompt you type in Claude Code, with the agent, model and session, as JSONL in repositories that opted in to Open Prompts.",
+  "license": "MIT",
+  "keywords": [
+    "prompts",
+    "transparency",
+    "open-source"
+  ],
+  "hooks": "./hooks/claude-code.json",
+  "homepage": "https://github.com/theophile-wallez/open-prompts",
+  "repository": "https://github.com/theophile-wallez/open-prompts"
+}

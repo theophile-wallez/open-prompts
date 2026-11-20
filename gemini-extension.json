@@ -1,0 +1,5 @@
+{
+  "name": "open-prompts",
+  "version": "0.1.0",
+  "description": "Records every prompt you type in Gemini CLI, with the agent, model and session, as JSONL in repositories that opted in to Open Prompts."
+}

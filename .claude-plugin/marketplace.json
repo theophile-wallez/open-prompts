@@ -1,0 +1,14 @@
+{
+  "name": "open-prompts",
+  "description": "Open Prompts: commit the prompts behind your code.",
+  "owner": {
+    "name": "Open Prompts"
+  },
+  "plugins": [
+    {
+      "name": "open-prompts",
+      "source": "./",
+      "description": "Records every prompt you type in Claude Code, with the agent, model and session, as JSONL in repositories that opted in."
+    }
+  ]
+}

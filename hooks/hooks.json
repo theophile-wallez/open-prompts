@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "name": "open-prompts",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}bin${/}open-prompts\" hook --agent gemini-cli",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

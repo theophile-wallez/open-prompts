@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+// Entry point. Uses a dynamic import so it runs whether Node loads this file as CommonJS or ESM.
+import('../src/cli.mjs').then(({ main }) => main(process.argv.slice(2)));
