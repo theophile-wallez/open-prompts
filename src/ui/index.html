@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Open Prompts</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="/fonts/AlloVariableFriendly.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" type="module"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#results">Skip to prompts</a>
+
+    <div class="shell">
+      <aside class="sidebar" aria-label="Project and filters">
+        <div class="workspace">
+          <span id="project-icon" class="workspace-mark" aria-hidden="true"></span>
+          <div class="workspace-text">
+            <p id="project-name" class="workspace-name">Open Prompts</p>
+            <p id="project-path" class="workspace-path"></p>
+          </div>
+        </div>
+
+        <div class="search">
+          <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" /><path d="m13.2 13.2 3.8 3.8" /></svg>
+          <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search prompts, sessions and models" />
+          <kbd id="search-hint" class="search-hint" aria-hidden="true">/</kbd>
+        </div>
+
+        <button id="filters-toggle" class="filters-toggle" type="button" aria-expanded="false" aria-controls="filters">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M6 10h8M8.5 14.5h3" /></svg>
+          Filters
+        </button>
+
+        <nav id="filters" class="filters" aria-label="Filters">
+          <section id="authors-group" class="nav-group" aria-labelledby="authors-heading" hidden>
+            <h2 id="authors-heading" class="nav-label">Contributors</h2>
+            <ul id="authors" class="nav-list"></ul>
+          </section>
+          <section class="nav-group" aria-labelledby="agents-heading">
+            <h2 id="agents-heading" class="nav-label">Agents</h2>
+            <ul id="agents" class="nav-list"></ul>
+          </section>
+          <section class="nav-group" aria-labelledby="models-heading">
+            <h2 id="models-heading" class="nav-label">Models</h2>
+            <ul id="models" class="nav-list"></ul>
+          </section>
+          <section class="nav-group" aria-labelledby="sessions-heading">
+            <h2 id="sessions-heading" class="nav-label">Sessions</h2>
+            <ul id="sessions" class="nav-list session-list"></ul>
+          </section>
+        </nav>
+      </aside>
+
+      <div class="content">
+        <header class="toolbar">
+          <h1 class="page-title">Prompts</h1>
+          <div class="toolbar-actions">
+            <div id="sort" class="segmented" role="radiogroup" aria-label="Order of sessions">
+              <span class="segmented-indicator" aria-hidden="true"></span>
+              <button type="button" role="radio" data-value="newest" aria-checked="true">Newest</button>
+              <button type="button" role="radio" data-value="oldest" aria-checked="false">Oldest</button>
+            </div>
+            <button id="recording" class="recording" type="button" aria-pressed="true">
+              <span class="recording-dot" aria-hidden="true"></span>
+              <span id="recording-label">Recording</span>
+            </button>
+            <button id="theme" class="icon-button" type="button" aria-label="Switch to dark theme" title="Switch theme"></button>
+          </div>
+        </header>
+
+        <main id="results" class="main" tabindex="-1">
+          <section id="overview" class="overview" aria-label="Overview"></section>
+
+          <div id="problems" class="problems" hidden></div>
+
+          <div id="active-filters" class="active-filters" hidden></div>
+
+          <div id="list" class="list"></div>
+        </main>
+      </div>
+    </div>
+
+    <dialog id="confirm" class="dialog" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-body"></p>
+        <div class="dialog-actions">
+          <button value="cancel" class="button" type="submit">Cancel</button>
+          <button value="ok" id="confirm-ok" class="button button-danger" type="submit"></button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  </body>
+</html>

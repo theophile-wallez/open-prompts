@@ -118,10 +118,33 @@ Recording: on
 | `open-prompts init [--dir <dir>]` | Enable Open Prompts in the current repository |
 | `open-prompts status` | Show whether prompts are recorded here, and for which agents |
 | `open-prompts show [file\|session]` | Print recorded prompts in a readable form |
+| `open-prompts ui [--port <n>] [--no-open]` | Browse, search, edit and delete the prompts of this repository in your browser |
 | `open-prompts validate [path…]` | Check prompt files against the specification. Exits with 1 on problems, for CI |
 | `open-prompts import <session\|file>` | Import a past Claude Code session. `--all` imports every session of the repository |
 | `open-prompts pause` / `resume` | Stop or restart recording on this machine |
 | `open-prompts install` / `uninstall` | Add or remove the hooks, for every agent found or one `--agent` |
+
+### Browse your prompts
+
+```sh
+open-prompts ui
+```
+
+opens a page in your browser with every prompt of the repository, grouped by session. Search the text, filter by contributor, agent, model, session or day, and see which sessions are not committed yet. You can copy a prompt, edit it, redact part of it, or delete a prompt or a whole session before you commit. New prompts appear as you type them to your agents.
+
+The page is served from your machine only, on `127.0.0.1`, and opens only with the link printed in the terminal. Edits rewrite the line in the prompt file and run the secret redaction again. Press Ctrl+C to stop.
+
+Each session shows who wrote it, and you can filter by contributor. The author comes from git: the person who committed the session's prompt file, or your own git identity for a session that is not committed yet (`.mailmap` is applied). The page then matches each author to their account on the forge of the `origin` remote, to show their name, a link to their profile and their avatar:
+
+- GitHub: from the private `…@users.noreply.github.com` address, or else from the commit, with the GitHub API. It goes through the `gh` CLI when it is signed in, which also covers private repositories, and anonymously otherwise.
+- GitLab: the avatar for the email address, from the GitLab API.
+- Anywhere else: the Gravatar of the address.
+
+These lookups send the commit IDs, or for GitLab the email addresses, to the forge, and Gravatar receives a hash of the address. Their results and the avatars are kept for a week in the state directory. `open-prompts ui --offline` makes no request at all and shows initials instead.
+
+The page shows the repository's icon, found the way T3 Code finds it: an `iconPath` in `t3.json`, a well-known favicon or logo file, the `<link rel="icon">` of the app's HTML, or the icons of a web app or browser extension manifest.
+
+The interface is set in [Allo](https://allo.joshpuckett.me) by Josh Puckett, bundled under the SIL Open Font License ([`src/ui/fonts/OFL.txt`](src/ui/fonts/OFL.txt)).
 
 To check prompt files in CI:
 
