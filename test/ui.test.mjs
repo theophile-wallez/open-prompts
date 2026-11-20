@@ -43,8 +43,11 @@ test('the page and the API need the token from the printed link', async (t) => {
   assert.equal((await fetch(`${base}/`)).status, 403);
   assert.equal((await fetch(`${base}/api/data`)).status, 403);
   assert.equal((await fetch(`${base}/?token=wrong`, { redirect: 'manual' })).status, 403);
-  assert.equal((await call('GET', '/')).status, 200);
+  const page = await call('GET', '/');
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<html lang="en" data-source="local">/, 'the page knows it is served locally, not from GitHub Pages');
   assert.match(await (await call('GET', '/app.js')).text(), /EventSource/);
+  for (const module of ['/github.mjs', '/prompt-file.mjs']) assert.equal((await call('GET', module)).headers.get('content-type'), 'text/javascript; charset=utf-8');
   const font = await call('GET', '/fonts/AlloVariableFriendly.woff2');
   assert.equal(font.status, 200);
   assert.equal(font.headers.get('content-type'), 'font/woff2');

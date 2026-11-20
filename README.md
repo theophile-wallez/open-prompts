@@ -144,6 +144,24 @@ These lookups send the commit IDs, or for GitLab the email addresses, to the for
 
 The page shows the repository's icon, found the way T3 Code finds it: an `iconPath` in `t3.json`, a well-known favicon or logo file, the `<link rel="icon">` of the app's HTML, or the icons of a web app or browser extension manifest.
 
+### Share them with a link
+
+The same interface is published on GitHub Pages, at [theophile-wallez.github.io/open-prompts](https://theophile-wallez.github.io/open-prompts/). Paste the link of a GitHub repository that records its prompts, and the page shows them, read from GitHub in your browser. The repository is in the page's address, with the filters you pick, so the link can be shared:
+
+```text
+https://theophile-wallez.github.io/open-prompts/?repo=owner/name
+https://theophile-wallez.github.io/open-prompts/?repo=owner/name&ref=a-branch#session=2026-11-20-234908e6.jsonl
+```
+
+The page reads the default branch, or the one in `ref`, as it is on GitHub: prompts that are not pushed are not there. It cannot change anything. To edit or delete prompts, use `open-prompts ui`.
+
+- **Public repositories** need nothing. Without a token, GitHub allows 60 requests an hour from one address; opening a repository takes 4, and the prompt files come from `raw.githubusercontent.com`, which does not count. Who wrote each session is only shown with a token, since it comes from GitHub's GraphQL API.
+- **Private repositories** need a token of someone who can read them. Choose **Add a token**, and create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with read-only access to the contents of the repositories you want to open. For a repository of an organization, the organization may have to approve the token, or allow it for SAML single sign-on.
+
+The token stays in your browser, for the tab only unless you choose **Remember on this device**, and is sent only to `api.github.com`. It is never part of the address: a link to a private repository only opens for people who can read it, with their own token. A static page cannot sign in to GitHub with OAuth, which needs a server to keep a secret, so a token is the only way.
+
+To publish the page from your own fork, enable GitHub Pages with **GitHub Actions** as its source in the repository's settings. The [`Pages`](.github/workflows/pages.yml) workflow deploys it on each push to `main` that changes `src/ui/`.
+
 The interface is set in [Allo](https://allo.joshpuckett.me) by Josh Puckett, bundled under the SIL Open Font License ([`src/ui/fonts/OFL.txt`](src/ui/fonts/OFL.txt)).
 
 To check prompt files in CI:

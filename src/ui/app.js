@@ -1,6 +1,14 @@
 // Open Prompts interface. Plain modules, no framework: the page is rebuilt from `state` on each change.
+//
+// The same page runs in two places. Served by `open-prompts ui`, it reads and edits the prompt
+// files of the local repository. Published on GitHub Pages, it reads any GitHub repository named
+// in its address (?repo=owner/name), read-only, so a link to it can be shared.
 
+import { GitHubError, loadRepository, parseRepo } from './github.mjs';
 import { LOGOS } from './logos.js';
+
+const LOCAL = document.documentElement.dataset.source === 'local';
+const TOKEN_KEY = 'open-prompts-github-token';
 
 const AGENTS = {
   'claude-code': ['Claude Code', 'claudecode'],
@@ -45,11 +53,14 @@ const ICONS = {
   x: '<path d="M6 6l8 8M14 6l-8 8"/>',
   inbox: '<path d="M3 11.5l2.2-6A1.5 1.5 0 0 1 6.6 4.5h6.8a1.5 1.5 0 0 1 1.4 1l2.2 6"/><path d="M3 11.5V15a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 17 15v-3.5h-4a3 3 0 0 1-6 0z"/>',
   search: '<circle cx="9" cy="9" r="5.5"/><path d="m13.2 13.2 3.8 3.8"/>',
+  key: '<circle cx="7" cy="13" r="3"/><path d="M9.2 10.8L16 4M13.5 6.5l2 2M11.5 8.5l1.5 1.5"/>',
+  external: '<path d="M8.5 4.5H5.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3"/><path d="M11.5 4.5h4v4M15.5 4.5l-7 7"/>',
   sun: '<circle cx="10" cy="10" r="3.5"/><path d="M10 2v1.5M10 16.5V18M2 10h1.5M16.5 10H18M4.3 4.3l1.1 1.1M14.6 14.6l1.1 1.1M4.3 15.7l1.1-1.1M14.6 5.4l1.1-1.1"/>',
 };
 
 const state = {
   data: null,
+  repo: null, // On GitHub Pages: { owner, repo, ref } from the address.
   query: '',
   agents: new Set(),
   authors: new Set(),
@@ -198,9 +209,26 @@ async function api(method, url, body) {
   return payload;
 }
 
+// On GitHub Pages, a token lets the page read private repositories. It is kept for the tab only,
+// or on this device when asked, and never goes into the address.
+const githubToken = {
+  get: () => sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY),
+  set(value, remember) {
+    this.clear();
+    (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, value);
+  },
+  clear() {
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+  },
+  remembered: () => localStorage.getItem(TOKEN_KEY) !== null,
+};
+
+const fetchData = () => (LOCAL ? api('GET', '/api/data') : loadRepository(state.repo, { token: githubToken.get() }));
+
 async function load({ markFresh = false } = {}) {
   const previous = state.data ? new Set(state.data.prompts.map((p) => p.id ?? keyOf(p))) : null;
-  const data = await api('GET', '/api/data');
+  const data = await fetchData();
   const positions = new Map();
   for (const p of data.prompts) {
     positions.set(p.file, (positions.get(p.file) ?? 0) + 1);
@@ -344,7 +372,8 @@ function render() {
   $('project-path').title = data.project.root;
   renderProjectIcon(data.project);
 
-  renderRecording();
+  if (LOCAL) renderRecording();
+  else renderRepoActions();
   renderSort();
   // Contributors are listed when there is more than one, or a filter on one is set.
   const authorsShown = manyAuthors() || state.authors.size > 0;
@@ -369,7 +398,7 @@ function renderProjectIcon(project) {
   // The tab shows the project's icon too, which tells several open projects apart.
   const tabIcon = document.querySelector('link[rel="icon"]');
   tabIcon.removeAttribute('type');
-  tabIcon.href = project.icon ?? '/favicon.svg';
+  tabIcon.href = project.icon ?? 'favicon.svg';
   if (!project.icon) return monogram();
   const img = h('img', { src: project.icon, alt: '', width: 32, height: 32, decoding: 'async' });
   img.addEventListener('error', monogram, { once: true });
@@ -623,13 +652,15 @@ function renderList() {
         { class: 'empty' },
         h('span', { class: 'empty-icon' }, icon('inbox')),
         h('h2', {}, 'No prompts yet'),
-        h(
-          'p',
-          {},
-          'Prompts you type to a coding agent in this repository appear here as soon as they are recorded. If nothing shows up after your next prompt, run ',
-          h('code', {}, 'open-prompts status'),
-          '.',
-        ),
+        LOCAL
+          ? h(
+              'p',
+              {},
+              'Prompts you type to a coding agent in this repository appear here as soon as they are recorded. If nothing shows up after your next prompt, run ',
+              h('code', {}, 'open-prompts status'),
+              '.',
+            )
+          : h('p', {}, `${state.data.project.fullName} records its prompts in ${state.data.project.dir}/, but no prompt file has been pushed to ${state.data.project.ref} yet.`),
       ),
     );
     return;
@@ -770,12 +801,13 @@ function renderSession(session, prompts) {
           icon('copy'),
           'Copy session ID',
         ),
-        h(
-          'button',
-          { class: 'action action-danger', type: 'button', onclick: () => removeSession(session) },
-          icon('trash'),
-          'Delete session',
-        ),
+        LOCAL &&
+          h(
+            'button',
+            { class: 'action action-danger', type: 'button', onclick: () => removeSession(session) },
+            icon('trash'),
+            'Delete session',
+          ),
       ),
     ),
     h('div', { class: 'session-card' }, prompts.map(renderPrompt)),
@@ -858,20 +890,21 @@ function renderPrompt(p) {
             'div',
             { class: 'prompt-actions' },
             h('button', { class: 'action', type: 'button', onclick: () => copy(p.prompt, 'Prompt copied') }, icon('copy'), 'Copy'),
-            h(
-              'button',
-              {
-                class: 'action',
-                type: 'button',
-                onclick: () => {
-                  state.editing = key;
-                  render();
+            LOCAL &&
+              h(
+                'button',
+                {
+                  class: 'action',
+                  type: 'button',
+                  onclick: () => {
+                    state.editing = key;
+                    render();
+                  },
                 },
-              },
-              icon('edit'),
-              'Edit',
-            ),
-            h('button', { class: 'action action-danger', type: 'button', onclick: () => removePrompt(p) }, icon('trash'), 'Delete'),
+                icon('edit'),
+                'Edit',
+              ),
+            LOCAL && h('button', { class: 'action action-danger', type: 'button', onclick: () => removePrompt(p) }, icon('trash'), 'Delete'),
         ),
       ];
 
@@ -1035,6 +1068,143 @@ function toast(message, kind = 'info') {
   }, kind === 'error' ? 6000 : 2600);
 }
 
+// ---------------------------------------------------------------- GitHub Pages
+
+/** The page's address for a repository. Owner and name only use characters that need no escaping. */
+function repoAddress({ owner, repo, ref }) {
+  const refPart = ref ? `&ref=${ref.split('/').map(encodeURIComponent).join('/')}` : '';
+  return `${location.pathname}?repo=${owner}/${repo}${refPart}`;
+}
+
+function repoFromAddress() {
+  const params = new URLSearchParams(location.search);
+  const repo = parseRepo(params.get('repo'));
+  if (repo && params.get('ref')) repo.ref = params.get('ref');
+  return repo;
+}
+
+function describeError(error) {
+  if (!(error instanceof GitHubError)) return error.message;
+  if (error.kind === 'rate-limited') {
+    const when = error.resetAt ? `after ${fmtTime.format(error.resetAt)}` : 'later';
+    return `${error.message} Try again ${when}${githubToken.get() ? '.' : ', or add a token: it raises the limit.'}`;
+  }
+  if (error.kind === 'unauthorized') return `${error.message} Replace it or remove it.`;
+  return error.message;
+}
+
+/** The screen that asks for a repository, with what went wrong with the last one, if anything. */
+function showConnect(message = null, value = '') {
+  $('shell').hidden = true;
+  $('connect').hidden = false;
+  document.title = 'Open Prompts';
+  const error = $('connect-error');
+  error.hidden = !message;
+  error.textContent = message ?? '';
+  if (value) $('connect-repo').value = value;
+  $('connect-repo').focus();
+}
+
+function openRepo(input) {
+  const repo = parseRepo(input);
+  if (!repo) {
+    showConnect('This is not a link to a GitHub repository. Paste one such as github.com/owner/repository.');
+    return;
+  }
+  location.assign(repoAddress(repo));
+}
+
+async function openCurrentRepo() {
+  const name = `${state.repo.owner}/${state.repo.repo}`;
+  $('connect').hidden = true;
+  $('shell').hidden = false;
+  if (!state.data) {
+    document.title = `${name} · Open Prompts`;
+    $('project-name').textContent = state.repo.repo;
+    $('project-path').textContent = name;
+    $('list').replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Loading prompts'), h('p', {}, `Reading ${name} on GitHub.`)));
+  }
+  try {
+    await load();
+  } catch (error) {
+    state.data = null;
+    showConnect(describeError(error), name);
+    return;
+  }
+  // The address names the repository as GitHub spells it, so a shared link reads well.
+  const canonical = repoAddress({ ...state.repo, ...parseRepo(state.data.project.fullName), ref: state.repo.ref });
+  if (canonical !== `${location.pathname}${location.search}`) history.replaceState(null, '', `${canonical}${location.hash}`);
+}
+
+function renderRepoActions() {
+  $('repo-link').href = state.data.project.url;
+}
+
+function renderTokenState() {
+  const has = Boolean(githubToken.get());
+  $('token').toggleAttribute('data-active', has);
+  $('token').title = has ? 'A token is saved for private repositories' : 'Add a token for private repositories';
+  const button = h('button', { class: 'link-button', type: 'button', onclick: tokenDialog }, has ? 'Change or remove it' : 'Add a token');
+  $('connect-token').replaceChildren(...(has ? ['A token is saved for private repositories. ', button, '.'] : ['Private repository? ', button, ' first.']));
+}
+
+function tokenDialog() {
+  const dialog = $('token-dialog');
+  const input = $('token-input');
+  const saved = githubToken.get();
+  input.value = '';
+  input.placeholder = saved ? 'A token is saved. Paste another to replace it.' : 'github_pat_…';
+  $('token-remember').checked = githubToken.remembered();
+  $('token-remove').hidden = !saved;
+  dialog.returnValue = '';
+  dialog.showModal();
+  input.focus();
+  dialog.addEventListener(
+    'close',
+    () => {
+      if (dialog.returnValue === 'remove') {
+        githubToken.clear();
+        toast('Token removed');
+      } else if (dialog.returnValue === 'save') {
+        const value = input.value.trim() || saved;
+        if (!value) return;
+        if (!/^[A-Za-z0-9_]+$/.test(value)) {
+          toast('This does not look like a GitHub token.', 'error');
+          return;
+        }
+        githubToken.set(value, $('token-remember').checked);
+        toast('Token saved');
+      } else return;
+      renderTokenState();
+      if (state.repo) openCurrentRepo();
+    },
+    { once: true },
+  );
+}
+
+function shareLink() {
+  const message = state.data?.project.private ? 'Link copied. Only people who can read this repository can open it, with their own token.' : 'Link copied';
+  copy(location.href, message);
+}
+
+function startGitHub() {
+  $('recording').hidden = true;
+  for (const id of ['share', 'token', 'repo-link', 'switch-repo']) $(id).hidden = false;
+  $('token').append(icon('key'));
+  $('repo-link').append(icon('external'));
+  $('switch-repo').href = location.pathname;
+  renderTokenState();
+  $('share').addEventListener('click', shareLink);
+  $('token').addEventListener('click', tokenDialog);
+  $('connect-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    openRepo($('connect-repo').value);
+  });
+  state.repo = repoFromAddress();
+  if (state.repo) openCurrentRepo();
+  else showConnect(new URLSearchParams(location.search).get('repo') ? 'This is not a link to a GitHub repository. Paste one such as github.com/owner/repository.' : null);
+}
+
 // ---------------------------------------------------------------- Theme and tooltip
 
 function applyTheme(theme) {
@@ -1132,6 +1302,8 @@ function start() {
   // The buttons change width when the font loads or the page is resized.
   new ResizeObserver(placeSortIndicator).observe($('sort'));
   document.fonts?.ready.then(placeSortIndicator);
+
+  if (!LOCAL) return startGitHub();
 
   // New prompts appear while the page is open: the server sends an event when a prompt file changes.
   const events = new EventSource('/api/events');

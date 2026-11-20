@@ -17,6 +17,7 @@ import { stateDir } from '../state.mjs';
 import { listFiles, rewriteLine } from '../store.mjs';
 import { createContributors } from './contributors.mjs';
 import { ICON_TYPES, findProjectIcon } from './project-icon.mjs';
+import { parsePromptFile } from './prompt-file.mjs';
 
 const ASSETS_DIR = fileURLToPath(new URL('.', import.meta.url));
 const ASSETS = {
@@ -24,6 +25,8 @@ const ASSETS = {
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/logos.js': ['logos.js', 'text/javascript; charset=utf-8'],
+  '/github.mjs': ['github.mjs', 'text/javascript; charset=utf-8'],
+  '/prompt-file.mjs': ['prompt-file.mjs', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
   '/fonts/AlloVariableFriendly.woff2': ['fonts/AlloVariableFriendly.woff2', 'font/woff2'],
 };
@@ -71,43 +74,7 @@ function readPromptFile(file) {
   const name = path.basename(file);
   const content = fs.readFileSync(file, 'utf8');
   const problems = validateFileContent(content, name).map(({ line, message }) => ({ file: name, line, message }));
-  const lines = content.split('\n');
-  if (lines.at(-1) === '') lines.pop();
-  const prompts = [];
-  lines.forEach((text, index) => {
-    let record;
-    try {
-      record = JSON.parse(text);
-    } catch {
-      return;
-    }
-    if (record === null || typeof record !== 'object' || typeof record.prompt !== 'string') return;
-    prompts.push({
-      file: name,
-      line: index,
-      hash: hashLine(text),
-      id: typeof record.id === 'string' ? record.id : null,
-      timestamp: typeof record.timestamp === 'string' ? record.timestamp : null,
-      agent: typeof record.agent === 'string' ? record.agent : 'unknown',
-      agentVersion: typeof record.agent_version === 'string' ? record.agent_version : null,
-      model: typeof record.model === 'string' ? record.model : null,
-      session: typeof record.session === 'string' ? record.session : name,
-      prompt: record.prompt,
-    });
-  });
-  if (prompts.length === 0) return { prompts, problems, session: null };
-  const times = prompts.map((p) => p.timestamp).filter(Boolean).sort();
-  const session = {
-    file: name,
-    session: prompts[0].session,
-    agent: prompts[0].agent,
-    agentVersion: prompts[0].agentVersion,
-    models: [...new Set(prompts.map((p) => p.model).filter(Boolean))],
-    count: prompts.length,
-    first: times[0] ?? null,
-    last: times.at(-1) ?? null,
-  };
-  return { prompts, problems, session };
+  return { ...parsePromptFile(name, content, { hash: hashLine }), problems };
 }
 
 // Parsed prompt files, by path. An agent only appends to one file at a time, so a file is read
@@ -296,7 +263,10 @@ export function startServer(project, { port = 0, host = '127.0.0.1', env = proce
       const asset = ASSETS[url.pathname];
       if (asset && req.method === 'GET') {
         const cache = asset[1] === 'font/woff2' ? { 'Cache-Control': 'max-age=604800, immutable' } : {};
-        return send(200, fs.readFileSync(path.join(ASSETS_DIR, asset[0])), { 'Content-Type': asset[1], ...cache });
+        let body = fs.readFileSync(path.join(ASSETS_DIR, asset[0]));
+        // The same page is published on GitHub Pages, where it reads repositories from GitHub instead.
+        if (asset[0] === 'index.html') body = String(body).replace('<html lang="en">', '<html lang="en" data-source="local">');
+        return send(200, body, { 'Content-Type': asset[1], ...cache });
       }
       if (req.method === 'GET' && /^\/avatar\/[a-f0-9]{20}$/.test(url.pathname)) {
         const image = await contributors.avatar(url.pathname.slice('/avatar/'.length));
