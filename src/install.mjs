@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { copilotHome } from './agents/copilot.mjs';
 
-export const AGENTS = ['claude-code', 'codex', 'cursor', 'gemini-cli', 'copilot', 'opencode'];
+export const AGENTS = ['claude-code', 'codex', 'cursor', 'gemini-cli', 'copilot', 'opencode', 'mistral-vibe'];
 
 export const AGENT_NAMES = {
   'claude-code': 'Claude Code',
@@ -15,11 +15,13 @@ export const AGENT_NAMES = {
   'gemini-cli': 'Gemini CLI',
   copilot: 'GitHub Copilot CLI',
   opencode: 'OpenCode',
+  'mistral-vibe': 'Mistral Vibe',
 };
 
 const home = () => os.homedir();
 const claudeDir = (env) => env.CLAUDE_CONFIG_DIR || path.join(home(), '.claude');
 const codexDir = (env) => env.CODEX_HOME || path.join(home(), '.codex');
+const vibeDir = (env) => env.VIBE_HOME || path.join(home(), '.vibe');
 const opencodeDir = (env) => env.OPENCODE_CONFIG_DIR || path.join(env.XDG_CONFIG_HOME || path.join(home(), '.config'), 'opencode');
 
 /** The file each agent's hooks go to. */
@@ -37,6 +39,8 @@ export function configPath(agent, env = process.env) {
       return path.join(copilotHome(env), 'hooks', 'open-prompts.json');
     case 'opencode':
       return path.join(opencodeDir(env), 'plugins', 'open-prompts.js');
+    case 'mistral-vibe':
+      return path.join(vibeDir(env), 'hooks.toml');
     default:
       throw new Error(`unknown agent "${agent}"`);
   }
@@ -51,6 +55,7 @@ export function detectInstalledAgents(env = process.env) {
     'gemini-cli': [path.join(home(), '.gemini')],
     copilot: [copilotHome(env)],
     opencode: [opencodeDir(env), path.join(home(), '.opencode')],
+    'mistral-vibe': [vibeDir(env)],
   };
   return AGENTS.filter((agent) => dirs[agent].some((dir) => fs.existsSync(dir)));
 }
@@ -171,6 +176,29 @@ function installNested(agent, file, paths) {
   writeJson(file, config);
 }
 
+// Vibe's hooks.toml is TOML, so the entry lives in a block between two marker comments,
+// which uninstall removes. A JSON string is also a valid TOML basic string.
+const VIBE_BLOCK_START = '# >>> open-prompts: added by "open-prompts install". Remove it with "open-prompts uninstall --agent mistral-vibe".';
+const VIBE_BLOCK_END = '# <<< open-prompts';
+const VIBE_BLOCK = /\n*# >>> open-prompts:[^\n]*\n[\s\S]*?# <<< open-prompts[^\n]*\n?/;
+
+function vibeBlock(paths) {
+  return [
+    VIBE_BLOCK_START,
+    '[[hooks]]',
+    'name = "open-prompts"',
+    'type = "pre_agent"',
+    'match = "main"',
+    `command = ${JSON.stringify(shellCommand(paths, 'mistral-vibe'))}`,
+    'timeout = 10.0',
+    'description = "Records the prompts you type, in repositories that opted in to Open Prompts"',
+    VIBE_BLOCK_END,
+    '',
+  ].join('\n');
+}
+
+const withoutVibeBlock = (text) => text.replace(VIBE_BLOCK, '\n').replace(/^\n+/, '');
+
 function opencodeShim(paths) {
   const url = pathToFileURL(path.join(path.dirname(path.dirname(paths.scriptPath)), 'src', 'opencode-plugin.mjs')).href;
   return [
@@ -206,6 +234,11 @@ export function installAgent(agent, { nodePath, scriptPath, env = process.env })
     case 'opencode':
       writeFile(file, opencodeShim(paths));
       return 'OpenCode loads the plugin when it starts.';
+    case 'mistral-vibe': {
+      const kept = fs.existsSync(file) ? withoutVibeBlock(fs.readFileSync(file, 'utf8')).trimEnd() : '';
+      writeFile(file, `${kept ? `${kept}\n\n` : ''}${vibeBlock(paths)}`);
+      return 'New Vibe sessions pick the hook up.';
+    }
     default:
       throw new Error(`unknown agent "${agent}"`);
   }
@@ -217,6 +250,13 @@ export function uninstallAgent(agent, { env = process.env } = {}) {
   if (!fs.existsSync(file)) return false;
   if (agent === 'copilot' || agent === 'opencode') {
     fs.rmSync(file);
+    return true;
+  }
+  if (agent === 'mistral-vibe') {
+    const before = fs.readFileSync(file, 'utf8');
+    if (!VIBE_BLOCK.test(before)) return false;
+    const after = withoutVibeBlock(before).trimEnd();
+    writeFile(file, after ? `${after}\n` : '');
     return true;
   }
   const before = readJson(file);
@@ -231,6 +271,7 @@ export function isAgentInstalled(agent, env = process.env) {
   const file = configPath(agent, env);
   if (!fs.existsSync(file)) return false;
   if (agent === 'copilot' || agent === 'opencode') return true;
+  if (agent === 'mistral-vibe') return VIBE_BLOCK.test(fs.readFileSync(file, 'utf8'));
   try {
     const config = readJson(file);
     if (agent === 'cursor') return (config.hooks?.beforeSubmitPrompt ?? []).some((entry) => isOurCommand(entry?.command));

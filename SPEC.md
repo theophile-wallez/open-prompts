@@ -83,6 +83,7 @@ Use the slug from this list when the agent is in it. For another agent, use its 
 | Gemini CLI | `gemini-cli` |
 | GitHub Copilot | `copilot` |
 | OpenCode | `opencode` |
+| Mistral Vibe | `mistral-vibe` |
 | Aider | `aider` |
 
 ## 5. What counts as a prompt
