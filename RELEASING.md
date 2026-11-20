@@ -6,14 +6,16 @@ Releases are published to npm by the [Release workflow](.github/workflows/releas
 
 npm configures trusted publishing in the settings of a package that already exists, so the first version is published by hand.
 
-1. Publish the first version from your machine:
+1. Create the free `open-prompts` organization on npmjs.com, which owns the `@open-prompts` scope.
+
+2. Publish the first version from your machine. `publishConfig` in `package.json` makes it public:
 
    ```sh
    npm login
    npm publish
    ```
 
-2. On npmjs.com, open **Packages → open-prompts → Settings → Trusted publishing**, choose **GitHub Actions**, and fill in:
+3. On npmjs.com, open **Packages → @open-prompts/cli → Settings → Trusted publishing**, choose **GitHub Actions**, and fill in:
 
    | Field | Value |
    | :- | :- |
@@ -24,9 +26,9 @@ npm configures trusted publishing in the settings of a package that already exis
 
    The configuration expires if no publish goes through it within 2 days, so release the next version soon after.
 
-3. Recommended by npm: once a release went through the workflow, restrict token-based publishing in the package settings, so that only the workflow can publish.
+4. Recommended by npm: once a release went through the workflow, restrict token-based publishing in the package settings, so that only the workflow can publish.
 
-4. Optional: in the GitHub repository, open **Settings → Environments → npm** and add yourself as a required reviewer. Each release then waits for your approval before it reaches npm.
+5. Optional: in the GitHub repository, open **Settings → Environments → npm** and add yourself as a required reviewer. Each release then waits for your approval before it reaches npm.
 
 ## Each release
 
