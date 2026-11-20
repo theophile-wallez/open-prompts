@@ -48,7 +48,7 @@ Claude Code, Gemini CLI and OpenCode are tested against real sessions. Codex, Cu
 You need Node.js 18 or later.
 
 ```sh
-npm install -g github:theophile-wallez/open-prompts
+npm install -g open-prompts
 open-prompts install
 ```
 
@@ -124,7 +124,7 @@ Recording: on
 To check prompt files in CI:
 
 ```yaml
-- run: npx --yes github:theophile-wallez/open-prompts validate
+- run: npx --yes open-prompts validate
 ```
 
 ## How it works
