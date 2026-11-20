@@ -5,6 +5,7 @@ import * as codex from './agents/codex.mjs';
 import * as copilot from './agents/copilot.mjs';
 import * as cursor from './agents/cursor.mjs';
 import * as geminiCli from './agents/gemini-cli.mjs';
+import * as vibe from './agents/vibe.mjs';
 
 export const HOOK_ADAPTERS = {
   'claude-code': claudeCode,
@@ -12,6 +13,7 @@ export const HOOK_ADAPTERS = {
   cursor,
   'gemini-cli': geminiCli,
   copilot,
+  'mistral-vibe': vibe,
 };
 
 /**
@@ -21,6 +23,7 @@ export const HOOK_ADAPTERS = {
  */
 export function detectAgent(input) {
   if (cursor.looksLikeCursor(input)) return 'cursor';
+  if (vibe.looksLikeVibe(input)) return 'mistral-vibe';
   if ('turn_id' in input) return 'codex';
   if (input.hook_event_name === 'BeforeAgent') return 'gemini-cli';
   if (copilot.looksLikeCopilot(input)) return 'copilot';

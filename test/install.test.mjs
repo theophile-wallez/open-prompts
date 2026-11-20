@@ -93,3 +93,21 @@ test('detects agents from their configuration directories', () =>
     fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
     assert.deepEqual(detectInstalledAgents(env), ['gemini-cli', 'opencode']);
   }));
+
+test('mistral-vibe: the hook goes in a marked block of hooks.toml, next to existing hooks', () =>
+  withHome((home, env) => {
+    const file = configPath('mistral-vibe', env);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const theirs = '[[hooks]]\nname = "lint"\ntype = "post_agent"\ncommand = "eslint ."\n';
+    fs.writeFileSync(file, theirs);
+    installAgent('mistral-vibe', { ...paths, env });
+    installAgent('mistral-vibe', { ...paths, env }); // idempotent
+    const text = fs.readFileSync(file, 'utf8');
+    assert.ok(text.startsWith(theirs));
+    assert.equal(text.match(/name = "open-prompts"/g).length, 1);
+    assert.match(text, /type = "pre_agent"\nmatch = "main"\ncommand = "'\/usr\/bin\/node' '\/opt\/open-prompts\/bin\/open-prompts' hook --agent mistral-vibe"/);
+    assert.ok(isAgentInstalled('mistral-vibe', env));
+    assert.equal(uninstallAgent('mistral-vibe', { env }), true);
+    assert.equal(fs.readFileSync(file, 'utf8'), theirs);
+    assert.equal(uninstallAgent('mistral-vibe', { env }), false);
+  }));

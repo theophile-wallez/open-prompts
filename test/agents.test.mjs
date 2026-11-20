@@ -154,3 +154,47 @@ test('opencode: a failing client never throws into OpenCode', async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(typedText([{ type: 'text', text: ' a ' }, { type: 'file' }]), 'a');
 });
+
+test('mistral-vibe: the background step waits for the reply, then reads the model from meta.json', async () => {
+  const vibe = await import('../src/agents/vibe.mjs');
+  const { root, env } = optedInRepo();
+  const sessionDir = tempDir('vibe-session-');
+  const line = (message) => `${JSON.stringify(message)}\n`;
+  fs.writeFileSync(path.join(sessionDir, 'messages.jsonl'), line({ role: 'user', content: 'old' }) + line({ role: 'assistant', content: 'old answer' }));
+  fs.writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify({ session_id: 'v-1', config: { active_model: 'mistral-medium-3-5', model_name: 'mistral-medium-2511' } }));
+  const input = { hook_event_name: 'pre_agent', session_id: 'v-1', parent_session_id: null, transcript_path: sessionDir, cwd: root, agent_name: 'default', turn_id: 'turn-1', prompt: 'refactor the parser' };
+
+  assert.equal(detectAgent(input), 'mistral-vibe');
+  const { action, payload } = await vibe.handle(input, { env, now: NOW });
+  assert.equal(action, 'deferred');
+  setTimeout(() => {
+    fs.writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify({ session_id: 'v-1', config: { active_model: 'devstral-3', model_name: 'devstral-2512' } }));
+    fs.appendFileSync(path.join(sessionDir, 'messages.jsonl'), line({ role: 'user', content: 'refactor the parser' }) + line({ role: 'assistant', content: 'Sure' }));
+  }, 300);
+  const started = Date.now();
+  const record = only((await vibe.complete(payload, { env, waitMs: 5000 })).file);
+  assert.ok(Date.now() - started >= 250, 'waited for the reply');
+  assert.deepEqual(record, { v: 1, timestamp: NOW.toISOString(), agent: 'mistral-vibe', agent_version: null, model: 'devstral-2512', session: 'v-1', prompt: 'refactor the parser' });
+});
+
+test('mistral-vibe: skips subagents and other events', async () => {
+  const vibe = await import('../src/agents/vibe.mjs');
+  const { root, env } = optedInRepo();
+  const base = { session_id: 's', transcript_path: '', cwd: root, prompt: 'x' };
+  assert.equal((await vibe.handle({ ...base, hook_event_name: 'pre_agent', parent_session_id: 'parent' }, { env })).action, 'ignored');
+  assert.equal((await vibe.handle({ ...base, hook_event_name: 'post_agent' }, { env })).action, 'ignored');
+  const { payload } = await vibe.handle({ ...base, hook_event_name: 'pre_agent', parent_session_id: null }, { env });
+  assert.equal(only((await vibe.complete(payload, { env, waitMs: 0 })).file).model, null);
+});
+
+test('mistral-vibe: finds the version of a uv or pipx install', async () => {
+  const { vibeVersion } = await import('../src/agents/vibe.mjs');
+  const tool = tempDir('vibe-tool-');
+  fs.mkdirSync(path.join(tool, 'bin'));
+  fs.mkdirSync(path.join(tool, 'lib', 'python3.12', 'site-packages', 'mistral_vibe-3.1.4.dist-info'), { recursive: true });
+  fs.writeFileSync(path.join(tool, 'bin', 'vibe'), '#!/bin/sh\n');
+  const bin = tempDir('vibe-bin-');
+  fs.symlinkSync(path.join(tool, 'bin', 'vibe'), path.join(bin, 'vibe'));
+  assert.equal(vibeVersion({ PATH: [tempDir(), bin].join(path.delimiter) }), '3.1.4');
+  assert.equal(vibeVersion({ PATH: tempDir() }), null);
+});

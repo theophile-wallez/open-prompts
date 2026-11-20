@@ -10,7 +10,7 @@ Open source shows the code. When more and more of that code is written with codi
 It has two parts:
 
 - [**The specification**](SPEC.md): a small, agent-agnostic JSONL format. Only the prompts people typed, with the agent, the model and the session. No replies, no tool output, no file contents.
-- **This tool**: hooks for Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI and OpenCode that record every prompt you type, in the background, in repositories that opted in.
+- **This tool**: hooks for Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, OpenCode and Mistral Vibe that record every prompt you type, in the background, in repositories that opted in.
 
 This repository follows its own rule: the prompts that built it are in [`prompts/`](prompts/).
 
@@ -40,8 +40,9 @@ Each line is written before the agent touches any file, so a commit the agent ma
 | Gemini CLI | `BeforeAgent` | The model that answered | Extension, or `open-prompts install` |
 | GitHub Copilot CLI | `userPromptSubmitted` | The model that answered | `open-prompts install` |
 | OpenCode | Plugin (`chat.message`) | The selected model | `open-prompts install` |
+| Mistral Vibe | `pre_agent` | The session's model | `open-prompts install` |
 
-Claude Code, Gemini CLI and OpenCode are tested against real sessions. Codex, Cursor and Copilot are tested against the payloads their documentation and source code describe; reports from real use are welcome.
+Claude Code, Gemini CLI and OpenCode are tested against real sessions. Codex, Cursor, Copilot and Mistral Vibe are tested against the payloads their documentation and source code describe; reports from real use are welcome.
 
 ## Install
 
@@ -52,7 +53,7 @@ npm install -g @open-prompts/cli
 open-prompts install
 ```
 
-`open-prompts install` finds the agents on your machine and adds the hooks to each one's user configuration. Use `--agent <name>` to pick one: `claude-code`, `codex`, `cursor`, `gemini-cli`, `copilot` or `opencode`. Your existing settings are kept, and a backup of each file it changes is saved next to it as `*.open-prompts.bak`.
+`open-prompts install` finds the agents on your machine and adds the hooks to each one's user configuration. Use `--agent <name>` to pick one: `claude-code`, `codex`, `cursor`, `gemini-cli`, `copilot`, `opencode` or `mistral-vibe`. Your existing settings are kept, and a backup of each file it changes is saved next to it as `*.open-prompts.bak`.
 
 Some agents can also install it their own way:
 
@@ -74,6 +75,7 @@ Installing records nothing yet. Each repository has to opt in.
 - **Cursor** reloads its hooks by itself. It also runs Claude Code hooks: Open Prompts recognizes Cursor's payload in both cases and writes each prompt once. After Cursor starts, the first prompt can be sent before the hooks are loaded.
 - **Copilot CLI** 1.0.21 or later. The Copilot harness in VS Code uses the same hooks.
 - **OpenCode** loads the plugin when it starts. `open-prompts install` writes `~/.config/opencode/plugins/open-prompts.js`.
+- **Mistral Vibe** reads the hook from `~/.vibe/hooks.toml` (or `$VIBE_HOME/hooks.toml`), in a block marked `open-prompts` that `uninstall` removes. It runs for the main session only, not for subagents.
 
 ## Enable it in a repository
 
@@ -132,7 +134,7 @@ To check prompt files in CI:
 Each agent calls `open-prompts hook` with a JSON description of the prompt. The hook prints nothing that would reach the conversation, always exits successfully, and never blocks a prompt.
 
 - **When the agent gives the model with the prompt** (Codex, Cursor, OpenCode), the record is written right away.
-- **When it doesn't** (Claude Code, Gemini CLI, Copilot), Open Prompts waits for the agent's first reply and reads which model wrote it from the agent's own session log. Claude Code runs the hook in the background. Gemini CLI and Copilot wait for their hooks, so the hook hands the waiting to a detached process and returns in a few milliseconds.
+- **When it doesn't** (Claude Code, Gemini CLI, Copilot, Mistral Vibe), Open Prompts waits for the agent's first reply and reads the model from the agent's own session files. Claude Code runs the hook in the background. Gemini CLI, Copilot and Mistral Vibe wait for their hooks, so the hook hands the waiting to a detached process and returns in a few milliseconds.
 
 Errors go to `errors.log` in the state directory (`~/.local/state/open-prompts`). `OPEN_PROMPTS_DEBUG=1` also logs every event to `debug.log` there. Note that `debug.log` contains your prompts.
 
