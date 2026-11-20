@@ -12,6 +12,9 @@ const RULES = [
   ['slack-token', /\bxox[abposr]-[A-Za-z0-9-]{10,}/g],
   ['stripe-key', /\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}/g],
   ['npm-token', /\bnpm_[A-Za-z0-9]{36}\b/g],
+  // Login links npm prints while it waits for two-factor authentication.
+  ['npm-auth-link', /(https:\/\/www\.npmjs\.com\/auth\/cli\/)([A-Za-z0-9-]{16,})/g, 1],
+  ['npm-auth-link', /(\/-\/v1\/done\?authId=)([A-Za-z0-9-]{16,})/g, 1],
   ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
   ['bearer-token', /(\bBearer\s+)([A-Za-z0-9._~+/-]{20,}=*)/g, 1],
   // Environment-style assignments: GITHUB_TOKEN=..., "DB_PASSWORD": "...", export API_KEY='...'

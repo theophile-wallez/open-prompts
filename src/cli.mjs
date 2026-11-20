@@ -29,7 +29,8 @@ Commands:
   status                  Show whether prompts are recorded here, and for which agents
   show [file|session]     Print recorded prompts in a readable form
   validate [path...]      Check prompt files against the specification
-  import <session|file>   Import a past Claude Code session (--all for every session of this project)
+  import <session|file>   Import a past Claude Code session (--all for every session of this project,
+                          --dry-run to print what would be imported)
   pause / resume          Stop or restart recording on this machine
   install [--agent <a>]   Add the hooks to every agent found on this machine, or to one agent
   uninstall [--agent <a>] Remove them
@@ -202,14 +203,16 @@ function transcriptDir(root) {
 
 function cmdImport(args) {
   const project = requireProject();
-  if (args.length === 0) throw new UsageError('Give a session ID, a transcript file, or --all.');
+  const dryRun = args.includes('--dry-run');
+  const targets = args.filter((arg) => !arg.startsWith('--'));
+  if (targets.length === 0 && !args.includes('--all')) throw new UsageError('Give a session ID, a transcript file, or --all.');
   const dir = transcriptDir(fs.realpathSync(project.root));
   let transcripts;
   if (args.includes('--all')) {
     transcripts = fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).map((name) => path.join(dir, name)) : [];
     if (transcripts.length === 0) throw new UsageError(`No Claude Code sessions found in ${dir}.`);
   } else {
-    transcripts = args.map((arg) => {
+    transcripts = targets.map((arg) => {
       if (arg.endsWith('.jsonl') && fs.existsSync(arg)) return arg;
       const candidate = path.join(dir, `${arg}.jsonl`);
       if (fs.existsSync(candidate)) return candidate;
@@ -219,13 +222,21 @@ function cmdImport(args) {
   let written = 0;
   let skipped = 0;
   for (const transcript of transcripts) {
-    const result = importTranscript(transcript, project);
+    const result = importTranscript(transcript, project, { dryRun });
     written += result.written;
     skipped += result.skipped;
-    for (const file of result.files) console.log(`${relative(file)}`);
+    if (dryRun) {
+      for (const record of result.records) {
+        console.log(`\n${record.timestamp} · ${record.model ?? 'unknown model'}`);
+        for (const line of record.prompt.split('\n')) console.log(`  ${line}`);
+      }
+    } else {
+      for (const file of result.files) console.log(`${relative(file)}`);
+    }
   }
-  console.log(`${written} prompt${written === 1 ? '' : 's'} imported${skipped ? `, ${skipped} already there` : ''}.`);
-  if (written > 0) console.log('Read them before committing: redaction of secrets is best effort.');
+  const verb = dryRun ? 'would be imported' : 'imported';
+  console.log(`\n${written} prompt${written === 1 ? '' : 's'} ${verb}${skipped ? `, ${skipped} already there` : ''}.`);
+  if (written > 0 && !dryRun) console.log('Read them before committing: redaction of secrets is best effort.');
 }
 
 function cmdPause(paused) {

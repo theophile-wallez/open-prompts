@@ -3,7 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { cleanHostMarkup, ignored, parseJsonLines, poll, readJsonlTail, realModel, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
+import { cleanHostMarkup, ignored, isHostAutomated, parseJsonLines, poll, readJsonlTail, realModel, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
 import { pruneState, readState, stateDir, updateState } from '../state.mjs';
 
 export const AGENT = 'claude-code';
@@ -22,7 +22,7 @@ const AUTOMATED_PREFIXES = [
 
 export function isAutomated(text) {
   const start = text.trimStart();
-  return AUTOMATED_PREFIXES.some((prefix) => start.startsWith(prefix));
+  return AUTOMATED_PREFIXES.some((prefix) => start.startsWith(prefix)) || isHostAutomated(start);
 }
 
 /** Removes the wrapper lines Claude Code puts around pasted text, and keeps the text. */
@@ -153,14 +153,19 @@ export function extractPrompts(entries) {
       if (current && current.model === null) current.model = realModel(entry.message?.model);
       continue;
     }
-    if (entry.type !== 'user' || entry.isMeta || entry.isCompactSummary || entry.isVisibleInTranscriptOnly) continue;
+    // A message typed while the agent was working is stored as a queued command.
+    const queued = entry.type === 'attachment' && entry.attachment?.type === 'queued_command';
+    if (queued && entry.attachment.commandMode !== 'prompt') continue;
+    if (!queued && (entry.type !== 'user' || entry.isMeta || entry.isCompactSummary || entry.isVisibleInTranscriptOnly)) continue;
     if (entry.toolUseResult !== undefined) continue;
-    const text = userText(entry.message?.content);
+    // Turns Claude Code started on its own, such as background task notifications.
+    if (entry.promptSource === 'system' || (entry.origin && entry.origin.kind !== 'human')) continue;
+    const text = queued ? (typeof entry.attachment.prompt === 'string' ? entry.attachment.prompt : null) : userText(entry.message?.content);
     if (text === null || isAutomated(text)) continue;
     const prompt = cleanPrompt(typedCommand(text));
     if (prompt === '' || typeof entry.sessionId !== 'string') continue;
     current = {
-      id: entry.promptId ?? entry.uuid,
+      id: queued ? (entry.attachment.source_uuid ?? entry.uuid) : (entry.promptId ?? entry.uuid),
       timestamp: entry.timestamp,
       session: entry.sessionId,
       agentVersion: typeof entry.version === 'string' ? entry.version : null,
@@ -172,17 +177,20 @@ export function extractPrompts(entries) {
   return prompts;
 }
 
-/** Imports a transcript file into a project. Returns counts. */
-export function importTranscript(transcriptPath, project) {
+/** Imports a transcript file into a project. With `dryRun`, writes nothing. Returns counts and records. */
+export function importTranscript(transcriptPath, project, { dryRun = false } = {}) {
   const entries = parseJsonLines(fs.readFileSync(transcriptPath, 'utf8'));
   let written = 0;
   let skipped = 0;
   const files = new Set();
+  const records = [];
   for (const prompt of extractPrompts(entries)) {
-    const result = writePrompt(project, { ...prompt, agent: AGENT });
+    const result = writePrompt(project, { ...prompt, agent: AGENT }, { dryRun });
     if (result.file) files.add(result.file);
-    if (result.action === 'recorded') written++;
-    else skipped++;
+    if (result.action === 'recorded') {
+      written++;
+      records.push(result.record);
+    } else skipped++;
   }
-  return { written, skipped, files: [...files] };
+  return { written, skipped, files: [...files], records };
 }

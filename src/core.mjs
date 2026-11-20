@@ -34,6 +34,12 @@ export const ignored = (reason) => ({ action: 'ignored', reason });
  * person's comment, and the JSON block, with its internal IDs, is removed.
  */
 export function cleanHostMarkup(text) {
+  // A context handoff wraps a summary of earlier activity around the new message,
+  // which follows the last "User message:" line.
+  if (/^Context handoff \(/.test(text.trimStart())) {
+    const marker = text.lastIndexOf('\nUser message:\n');
+    return marker < 0 ? '' : cleanHostMarkup(text.slice(marker + '\nUser message:\n'.length).trim());
+  }
   const block = /\n*<assistant_citations>([\s\S]*?)<\/assistant_citations>\n*/;
   const match = block.exec(text);
   if (!match) return text;
@@ -53,21 +59,28 @@ export function cleanHostMarkup(text) {
     .trim();
 }
 
+/** Messages a host such as T3 Code sends on its own, as if the person had typed them. */
+export function isHostAutomated(text) {
+  const start = text.trimStart();
+  return /^Update on pull request #\d+ \(/.test(start) && start.includes('which T3 Code is watching');
+}
+
 /** Turns a model reported by an agent into a string or null. */
 export const realModel = (model) => (typeof model === 'string' && model !== '' && model !== '<synthetic>' ? model : null);
 
 /**
  * Redacts and appends one prompt to the project's prompt files.
- * `prompt` must already be cleaned by the adapter.
+ * `prompt` must already be cleaned by the adapter. With `dryRun`, nothing is written and
+ * the result says what would have happened.
  */
-export function writePrompt(project, { agent, agentVersion, model, session, id, timestamp, prompt }) {
+export function writePrompt(project, { agent, agentVersion, model, session, id, timestamp, prompt }, { dryRun = false } = {}) {
   const trimmed = typeof prompt === 'string' ? prompt.trim() : '';
   if (trimmed === '') return ignored('empty prompt');
   if (typeof session !== 'string' || session === '') return ignored('no session id');
   const { text, kinds } = redact(trimmed);
   const record = makeRecord({ id, timestamp, agent, agentVersion, model: realModel(model), session, prompt: text });
-  const { file, written } = appendRecord(project.promptsDir, record);
-  return { action: written ? 'recorded' : 'duplicate', file, redacted: kinds };
+  const { file, written } = appendRecord(project.promptsDir, record, { dryRun });
+  return { action: written ? 'recorded' : 'duplicate', file, record, redacted: kinds };
 }
 
 /** Parses JSON lines, skipping the ones that are not JSON. */
