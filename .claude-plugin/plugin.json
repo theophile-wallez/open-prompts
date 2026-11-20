@@ -1,6 +1,6 @@
 {
   "name": "open-prompts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Records every prompt you type in Claude Code, with the agent, model and session, as JSONL in repositories that opted in to Open Prompts.",
   "license": "MIT",
   "keywords": [
