@@ -3,7 +3,7 @@
 // The payload carries the prompt, the session and the model. The version is in the
 // first line of the transcript, a `session_meta` record.
 
-import { cleanHostMarkup, ignored, readFirstJsonLine, realModel, resolveProject, writePrompt } from '../core.mjs';
+import { cleanHostMarkup, ignored, isHostAutomated, readFirstJsonLine, realModel, resolveProject, writePrompt } from '../core.mjs';
 import { readState, stateDir, updateState } from '../state.mjs';
 
 export const AGENT = 'codex';
@@ -22,6 +22,7 @@ export async function handle(input, { env = process.env, now = new Date() } = {}
   if (input?.hook_event_name !== 'UserPromptSubmit') return ignored(`event ${input?.hook_event_name} is not used`);
   if (input.agent_id) return ignored('prompt inside a subagent');
   if (typeof input.prompt !== 'string') return ignored('no prompt text');
+  if (isHostAutomated(input.prompt)) return ignored('automated message');
   const { project, reason } = resolveProject(input.cwd, env);
   if (!project) return ignored(reason);
   return writePrompt(project, {

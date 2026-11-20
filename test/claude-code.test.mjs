@@ -162,7 +162,7 @@ test('importTranscript writes records and does not duplicate them', async () => 
   ];
   fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n'));
   assert.equal(importTranscript(transcript, project).written, 1);
-  assert.deepEqual(importTranscript(transcript, project), { written: 0, skipped: 1, files: [path.join(promptsDir, '2026-11-20-234908e6.jsonl')] });
+  assert.deepEqual(importTranscript(transcript, project), { written: 0, skipped: 1, files: [path.join(promptsDir, '2026-11-20-234908e6.jsonl')], records: [] });
   assert.deepEqual(readJsonl(path.join(promptsDir, '2026-11-20-234908e6.jsonl')), [
     { v: 1, id: 'p1', timestamp: '2026-11-20T10:00:00Z', agent: 'claude-code', agent_version: '2.1.328', model: 'claude-opus-5-5', session: SESSION, prompt: 'hello' },
   ]);
@@ -214,4 +214,46 @@ test('cleanPrompt turns host citations into a quote and the comment', () => {
   const raw = `[assistant-quote-1]\n\n<assistant_citations>\nThe following citations refer to earlier assistant responses.\n${JSON.stringify(citations, null, 2)}\n</assistant_citations>`;
   assert.equal(cleanPrompt(raw), '> Only Claude Code is supported.\n\nCan you support the other agents?');
   assert.equal(cleanPrompt('see [1] in the list'), 'see [1] in the list');
+});
+
+test('extractPrompts keeps messages typed during a turn and skips turns the agent started', () => {
+  const base = { sessionId: SESSION, version: '2.1.328', isSidechain: false };
+  const entries = [
+    { ...base, type: 'user', promptId: 'p1', timestamp: '2026-11-20T10:00:00Z', promptSource: 'sdk', message: { role: 'user', content: 'start' } },
+    { ...base, type: 'assistant', message: { model: 'claude-opus-5-5' } },
+    { ...base, type: 'attachment', uuid: 'u2', timestamp: '2026-11-20T10:01:00Z', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'also do this', source_uuid: 's2' } },
+    { ...base, type: 'attachment', uuid: 'u3', attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: '<task-notification>x' } },
+    { ...base, type: 'assistant', message: { model: 'claude-opus-5-5' } },
+    { ...base, type: 'user', promptId: 'p4', promptSource: 'system', turnOrigin: 'task_notification', origin: { kind: 'task-notification' }, message: { role: 'user', content: 'Background job finished' } },
+    { ...base, type: 'user', promptId: 'p5', promptSource: 'sdk', message: { role: 'user', content: 'Update on pull request #1 (https://github.com/o/r/pull/1), which T3 Code is watching for you:\n- All 9 checks passed.' } },
+    { ...base, type: 'user', promptId: 'p6', timestamp: '2026-11-20T10:09:00Z', promptSource: 'sdk', message: { role: 'user', content: 'Context handoff (delta_since_target_last_seen):\nProvider context handoff.\n[Historical user] /compact\n\nUser message:\ni merged the PR' } },
+    { ...base, type: 'assistant', message: { model: 'claude-opus-5-5' } },
+  ];
+  assert.deepEqual(
+    extractPrompts(entries).map(({ id, prompt }) => ({ id, prompt })),
+    [
+      { id: 'p1', prompt: 'start' },
+      { id: 's2', prompt: 'also do this' },
+      { id: 'p6', prompt: 'i merged the PR' },
+    ],
+  );
+});
+
+test('the hook skips host notifications and unwraps context handoffs', async () => {
+  const { root, env } = optedInRepo();
+  const submit = async (prompt) => handleHook(event(root, { hook_event_name: 'UserPromptSubmit', prompt }), { env, now: NOW });
+  assert.equal((await submit('Update on pull request #3 (https://github.com/o/r/pull/3), which T3 Code is watching for you:\n- Checks passed.')).action, 'ignored');
+  const result = await submit('Context handoff (delta_since_target_last_seen):\nsummary\n\nUser message:\nship it');
+  assert.equal(readJsonl(result.file)[0].prompt, 'ship it');
+  assert.equal((await submit('Context handoff (x):\nonly a summary')).action, 'ignored');
+});
+
+test('importTranscript with dryRun writes nothing', () => {
+  const { root, promptsDir } = optedInRepo();
+  const transcript = path.join(tempDir(), `${SESSION}.jsonl`);
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'user', sessionId: SESSION, promptId: 'p1', timestamp: '2026-11-20T10:00:00Z', message: { role: 'user', content: 'hello' } }) + '\n');
+  const result = importTranscript(transcript, findProject(root), { dryRun: true });
+  assert.equal(result.written, 1);
+  assert.equal(result.records[0].prompt, 'hello');
+  assert.equal(fs.existsSync(promptsDir), false);
 });

@@ -41,3 +41,11 @@ test('leaves ordinary prompts and code alone', () => {
     assert.deepEqual(redact(input), { text: input, kinds: [] });
   }
 });
+
+test('redacts npm login links', () => {
+  const input = 'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/8f1958a8-0a1b-43b9-b816-6bcb6b5bf559\nthen https://registry.npmjs.org/-/v1/done?authId=8f1958a8-0a1b-43b9-b816-6bcb6b5bf559';
+  assert.equal(
+    redact(input).text,
+    'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/[REDACTED:npm-auth-link]\nthen https://registry.npmjs.org/-/v1/done?authId=[REDACTED:npm-auth-link]',
+  );
+});

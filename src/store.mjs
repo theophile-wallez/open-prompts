@@ -37,14 +37,14 @@ export function sessionFile(dir, session, timestamp) {
  * Appends `record` to its session file, unless a record with the same `id` is already there.
  * Returns { file, written }.
  */
-export function appendRecord(dir, record) {
-  fs.mkdirSync(dir, { recursive: true });
+export function appendRecord(dir, record, { dryRun = false } = {}) {
+  if (!dryRun) fs.mkdirSync(dir, { recursive: true });
   const file = sessionFile(dir, record.session, record.timestamp);
   if (record.id && fs.existsSync(file)) {
     const needle = `"id":${JSON.stringify(record.id)}`;
     if (fs.readFileSync(file, 'utf8').includes(needle)) return { file, written: false };
   }
-  fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
+  if (!dryRun) fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
   return { file, written: true };
 }
 
