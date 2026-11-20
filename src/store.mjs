@@ -72,3 +72,31 @@ export function listFiles(dir) {
     .sort()
     .map((name) => path.join(dir, name));
 }
+
+/**
+ * Replaces line `index` (0-based) of `file` with `replacement`, or removes it when `replacement` is null,
+ * but only if the line still reads `expected`. Removing the last line removes the file.
+ * Returns true on success, false when the line changed since it was read.
+ */
+export function rewriteLine(file, index, expected, replacement) {
+  const before = fs.readFileSync(file, 'utf8');
+  const lines = before.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines[index] !== expected) return false;
+  if (replacement === null) lines.splice(index, 1);
+  else lines[index] = replacement;
+  if (lines.length === 0) {
+    fs.rmSync(file);
+    return true;
+  }
+  // Write next to the file and rename, so a reader never sees half a file. If a hook appended
+  // a line in the meantime, start again rather than lose it.
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${lines.join('\n')}\n`, 'utf8');
+  if (fs.readFileSync(file, 'utf8') !== before) {
+    fs.rmSync(temp, { force: true });
+    return rewriteLine(file, index, expected, replacement);
+  }
+  fs.renameSync(temp, file);
+  return true;
+}

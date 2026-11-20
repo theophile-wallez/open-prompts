@@ -28,6 +28,9 @@ Commands:
   init [--dir <dir>]      Enable Open Prompts in the current repository
   status                  Show whether prompts are recorded here, and for which agents
   show [file|session]     Print recorded prompts in a readable form
+  ui [--port <n>]         Browse, search and edit the prompts of this repository in your browser
+                          (--no-open to only print the link, --offline to skip looking up
+                          the authors' accounts and avatars)
   validate [path...]      Check prompt files against the specification
   import <session|file>   Import a past Claude Code session (--all for every session of this project,
                           --dry-run to print what would be imported)
@@ -156,6 +159,46 @@ function cmdShow(args) {
     return;
   }
   console.log(files.map(formatFile).join('\n\n'));
+}
+
+/** Opens `url` in the default browser, without waiting for it and without failing. */
+function openBrowser(url) {
+  const [command, args] =
+    process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : ['xdg-open', [url]];
+  try {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // The link is printed anyway.
+  }
+}
+
+async function cmdUi(args) {
+  const project = requireProject();
+  const portValue = optionValue(args, '--port');
+  const port = portValue === undefined ? 4319 : Number(portValue);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError('--port needs a number between 0 and 65535');
+  // Without --offline, authors are matched to their GitHub or GitLab account, and avatars downloaded.
+  const offline = args.includes('--offline');
+  const { startServer } = await import('./ui/server.mjs');
+  let ui;
+  try {
+    ui = await startServer(project, { port, offline });
+  } catch (error) {
+    if (error.code !== 'EADDRINUSE' || portValue !== undefined) throw error;
+    ui = await startServer(project, { port: 0, offline });
+  }
+  console.log(`Open Prompts for ${project.root}`);
+  console.log(`\n  ${ui.url}\n`);
+  console.log('Only this link opens the page. Press Ctrl+C to stop.');
+  if (!args.includes('--no-open')) openBrowser(ui.url);
+  const stop = async () => {
+    await ui.close();
+    process.exit(0);
+  };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
 }
 
 function cmdValidate(args) {
@@ -362,6 +405,7 @@ const COMMANDS = {
   init: cmdInit,
   status: cmdStatus,
   show: cmdShow,
+  ui: cmdUi,
   validate: cmdValidate,
   import: cmdImport,
   pause: () => cmdPause(true),
