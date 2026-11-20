@@ -49,7 +49,7 @@ jobs:
           npm pack --dry-run --json > pack.json
           node -e '
             const files = JSON.parse(require("fs").readFileSync("pack.json", "utf8"))[0].files.map((f) => f.path);
-            const required = ["bin/open-prompts", "src/cli.mjs", "src/opencode-plugin.mjs", "src/ui/server.mjs", "src/ui/index.html", "src/ui/app.js", "src/ui/app.css", "src/ui/logos.js", "src/ui/project-icon.mjs", "src/ui/contributors.mjs", "src/ui/fonts/AlloVariableFriendly.woff2", "src/ui/fonts/OFL.txt", "hooks/hooks.json", "hooks/claude-code.json", ".claude-plugin/plugin.json", "gemini-extension.json", "schema/record.v1.json", "SPEC.md"];
+            const required = ["bin/open-prompts", "src/cli.mjs", "src/opencode-plugin.mjs", "src/ui/server.mjs", "src/ui/index.html", "src/ui/app.js", "src/ui/app.css", "src/ui/logos.js", "src/ui/project-icon.mjs", "src/ui/contributors.mjs", "src/ui/github.mjs", "src/ui/prompt-file.mjs", "src/ui/fonts/AlloVariableFriendly.woff2", "src/ui/fonts/OFL.txt", "hooks/hooks.json", "hooks/claude-code.json", ".claude-plugin/plugin.json", "gemini-extension.json", "schema/record.v1.json", "SPEC.md"];
             const missing = required.filter((file) => !files.includes(file));
             if (missing.length) { console.error("Missing from the package:", missing.join(", ")); process.exit(1); }
             console.log(files.length + " files, all required files present.");

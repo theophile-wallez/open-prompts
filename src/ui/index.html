@@ -4,16 +4,35 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
+    <!-- For the copy on GitHub Pages, which cannot send headers. The local server sends a stricter policy. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self'; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; base-uri 'none'; form-action 'none'" />
+    <meta name="referrer" content="no-referrer" />
     <title>Open Prompts</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="preload" href="/fonts/AlloVariableFriendly.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="stylesheet" href="/app.css" />
-    <script src="/app.js" type="module"></script>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="fonts/AlloVariableFriendly.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" type="module"></script>
   </head>
   <body>
     <a class="skip-link" href="#results">Skip to prompts</a>
 
-    <div class="shell">
+    <main id="connect" class="connect" hidden>
+      <div class="connect-card">
+        <img class="connect-mark" src="favicon.svg" alt="" width="40" height="40" />
+        <h1 class="connect-title">Open Prompts</h1>
+        <p class="connect-text">Read the prompts behind a repository's code. Paste a link to a GitHub repository that records its prompts with Open Prompts.</p>
+        <form id="connect-form" class="connect-form">
+          <label class="visually-hidden" for="connect-repo">GitHub repository</label>
+          <input id="connect-repo" class="field" type="text" inputmode="url" placeholder="github.com/owner/repository" autocomplete="off" autocapitalize="off" spellcheck="false" required />
+          <button class="button button-primary" type="submit">Open</button>
+        </form>
+        <p id="connect-error" class="connect-error" role="alert" hidden></p>
+        <p id="connect-token" class="connect-hint"></p>
+        <p class="connect-hint">The link of the page you get can be shared. To edit or delete prompts, run <code>open-prompts ui</code> in the repository.</p>
+      </div>
+    </main>
+
+    <div id="shell" class="shell">
       <aside class="sidebar" aria-label="Project and filters">
         <div class="workspace">
           <span id="project-icon" class="workspace-mark" aria-hidden="true"></span>
@@ -22,6 +41,7 @@
             <p id="project-path" class="workspace-path"></p>
           </div>
         </div>
+        <a id="switch-repo" class="workspace-switch" hidden>Open another repository</a>
 
         <div class="search">
           <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" /><path d="m13.2 13.2 3.8 3.8" /></svg>
@@ -63,6 +83,9 @@
               <button type="button" role="radio" data-value="newest" aria-checked="true">Newest</button>
               <button type="button" role="radio" data-value="oldest" aria-checked="false">Oldest</button>
             </div>
+            <button id="share" class="button" type="button" hidden>Copy link</button>
+            <button id="token" class="icon-button" type="button" aria-label="Token for private repositories" title="Token for private repositories" hidden></button>
+            <a id="repo-link" class="icon-button" target="_blank" rel="noopener noreferrer" aria-label="Open the repository on GitHub" title="Open the repository on GitHub" hidden></a>
             <button id="recording" class="recording" type="button" aria-pressed="true">
               <span class="recording-dot" aria-hidden="true"></span>
               <span id="recording-label">Recording</span>
@@ -90,6 +113,23 @@
         <div class="dialog-actions">
           <button value="cancel" class="button" type="submit">Cancel</button>
           <button value="ok" id="confirm-ok" class="button button-danger" type="submit"></button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="token-dialog" class="dialog" aria-labelledby="token-title">
+      <form id="token-form" method="dialog">
+        <h2 id="token-title">Read private repositories</h2>
+        <p>GitHub shows a private repository only to people who can read it. Paste a fine-grained token with read access to its contents.</p>
+        <p>The token stays in this browser and is sent only to api.github.com. It is never part of the link you share: each person opening a shared link uses their own.</p>
+        <p><a id="token-create" href="https://github.com/settings/personal-access-tokens/new?name=Open%20Prompts&amp;description=Read%20prompt%20files%20in%20Open%20Prompts&amp;contents=read" target="_blank" rel="noopener noreferrer">Create a read-only token on GitHub</a></p>
+        <label class="visually-hidden" for="token-input">Token</label>
+        <input id="token-input" class="field" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false" />
+        <label class="checkbox"><input id="token-remember" type="checkbox" /> Remember on this device</label>
+        <div class="dialog-actions">
+          <button id="token-remove" value="remove" class="button button-left" type="submit" hidden>Remove token</button>
+          <button value="cancel" class="button" type="submit" formnovalidate>Cancel</button>
+          <button value="save" class="button button-primary" type="submit">Save token</button>
         </div>
       </form>
     </dialog>
