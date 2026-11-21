@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { cleanHostMarkup, fileSize, ignored, poll, readJsonlFrom, realModel, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
+import { cleanHostMarkup, fileSize, ignored, poll, projectIgnores, readJsonlFrom, realModel, redactOptions, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
 import { redact } from '../redact.mjs';
 
 export const AGENT = 'mistral-vibe';
@@ -79,6 +79,9 @@ export async function handle(input, { env = process.env, now = new Date() } = {}
   const cwd = input.cwd || env.VIBE_CWD;
   const { project, reason } = resolveProject(cwd, env);
   if (!project) return ignored(reason);
+  // Checked here too, so that the pending file never holds a prompt the project leaves out.
+  const skip = projectIgnores(project, prompt);
+  if (skip) return ignored(skip);
   const sessionDir = typeof input.transcript_path === 'string' ? input.transcript_path : '';
   return {
     action: 'deferred',
@@ -86,7 +89,7 @@ export async function handle(input, { env = process.env, now = new Date() } = {}
       cwd,
       session: input.session_id,
       timestamp: now.toISOString(),
-      prompt: redact(prompt).text,
+      prompt: redact(prompt, redactOptions(project)).text,
       sessionDir,
       offset: sessionDir ? fileSize(messagesFile(sessionDir)) : 0,
     },
@@ -104,5 +107,5 @@ export async function complete(payload, { env = process.env, waitMs = waitMsFrom
     session: payload.session,
     timestamp: payload.timestamp,
     prompt: payload.prompt,
-  });
+  }, { env });
 }

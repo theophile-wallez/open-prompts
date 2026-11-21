@@ -1,17 +1,35 @@
 // Command line interface: `open-prompts <command>`.
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
-import { importTranscript } from './agents/claude-code.mjs';
-import { isPaused } from './core.mjs';
+import { claudeConfigDir, listTranscripts } from './agents/claude-code.mjs';
+import { auditRecords, recordsOf, stagedRecords } from './audit.mjs';
+import { SOURCES, parseSources, planImport } from './backfill.mjs';
+import { isPaused, writePrompt } from './core.mjs';
 import { completeDeferred, runHook } from './hook.mjs';
-import { AGENTS, AGENT_NAMES, configPath, detectInstalledAgents, installAgent, isAgentInstalled, isClaudePluginEnabled, uninstallAgent } from './install.mjs';
+import {
+  AGENTS,
+  AGENT_NAMES,
+  CLAUDE_KEEP_DAYS,
+  claudeRetentionWarning,
+  configPath,
+  detectInstalledAgents,
+  installAgent,
+  isAgentInstalled,
+  isClaudePluginEnabled,
+  missingPaths,
+  setClaudeRetention,
+  uninstallAgent,
+} from './install.mjs';
 import { CONFIG_FILE, DEFAULT_DIR, findProject, readConfig } from './project.mjs';
+import { MIN_NODE_MAJOR, installRuntime, nodeMajor, pickNode, removeRuntime, runtimeDir, runtimeInfo } from './runtime.mjs';
 import { validateFileContent } from './record.mjs';
+import { tildify } from './repo.mjs';
+import { collect, spoolEnabled } from './spool.mjs';
+import { STATS_GROUPS, formatStats, promptStats } from './stats.mjs';
 import { listFiles, readRecords } from './store.mjs';
 import { logError, stateDir } from './state.mjs';
 
@@ -32,15 +50,44 @@ Commands:
                           (--no-open to only print the link, --offline to skip looking up
                           the authors' accounts and avatars)
   validate [path...]      Check prompt files against the specification
-  import <session|file>   Import a past Claude Code session (--all for every session of this project,
-                          --dry-run to print what would be imported)
+  audit [path...]         List what to read in prompt files before committing them: possible
+                          secrets, emails, passwords, cookies, pasted logs (--staged for the
+                          records added in staged changes only, as a pre-commit check)
+  stats [--by <group>]    Count the prompts of this repository per day, model, session and
+                          agent (--by day, model, session or agent, or a list such as
+                          day,model, for some of them only; --json to print JSON)
+  import <session|file>   Import past sessions: one session ID or file, or --all for every session
+                          of this repository, in every checkout and worktree. --source claude,t3,
+                          codex,gemini picks where to look (default: all). --dry-run prints which
+                          folders matched and why, and what would be imported. Messages agents
+                          wrote are skipped, and a prompt found in two places is written once
+  collect [--dry-run]     Add the prompts of this repository that the hooks wrote in other
+                          checkouts, such as a deleted worktree, and that are missing here. They
+                          come from a local copy in the state directory, never published
   pause / resume          Stop or restart recording on this machine
-  install [--agent <a>]   Add the hooks to every agent found on this machine, or to one agent
-  uninstall [--agent <a>] Remove them
+  install [--agent <a>]   Add the hooks to every agent found on this machine, or to one agent.
+                          They run a copy of open-prompts in ~/.local/share/open-prompts
+                          (OPEN_PROMPTS_DATA_DIR), with a system-wide Node.js when the current
+                          one belongs to a version manager such as nvm (--node <path> to pick
+                          one). Run it again after updating open-prompts.
+                          --keep-transcripts [days] also sets how long Claude Code keeps its
+                          transcripts, which import reads (cleanupPeriodDays, 365 by default)
+  uninstall [--agent <a>] Remove them. Without --agent, also removes the copy
 
 Agents: ${AGENTS.join(', ')}
 
-Set OPEN_PROMPTS=off in the environment to pause recording for one session.`;
+Options in .open-prompts.json: "redact" (emails, homePaths), "ignoreCommands" (slash commands
+not to record, such as ["/clear"]), "ignore" (regular expressions), "spool" (false to keep
+no local copy for collect) and "maxPasteLength" (characters: longer pasted text keeps its
+first and last lines; off by default). See the README.
+
+Under T3 Code, hooks ask T3's database who wrote each message (Node.js 22.13 or later) and add
+"x_host" and "x_thread" to the records.
+
+Set OPEN_PROMPTS=off in the environment to pause recording for one session, and
+OPEN_PROMPTS_SPOOL=off to keep no local copy of the prompts for collect. OPEN_PROMPTS_DEBUG=1
+logs hook events to debug.log, and OPEN_PROMPTS_STATE_DIR, OPEN_PROMPTS_DATA_DIR and
+OPEN_PROMPTS_T3_DB move the state directory, the copy the hooks run and T3's database.`;
 
 class UsageError extends Error {}
 
@@ -61,7 +108,7 @@ function findGitRoot(start) {
 
 /** Whether this copy runs from a Claude Code plugin, where the plugin provides the hooks. */
 function runsAsPlugin() {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const configDir = claudeConfigDir();
   return Boolean(process.env.CLAUDE_PLUGIN_ROOT) || PACKAGE_ROOT.startsWith(path.join(configDir, 'plugins') + path.sep);
 }
 
@@ -101,6 +148,9 @@ function cmdInit(args) {
   const config = readConfig(configPath); // validates `dir`
   const promptsDir = path.join(root, ...config.dir.split(/[\\/]/));
   fs.mkdirSync(promptsDir, { recursive: true });
+  // Git keeps no empty directory: without this file, a fresh clone has no prompts directory.
+  const keep = path.join(promptsDir, '.gitkeep');
+  if (!fs.existsSync(keep)) fs.writeFileSync(keep, '');
 
   console.log(`Open Prompts is enabled in ${root}.`);
   console.log(`Prompts you type in Claude Code here will be written to ${relative(promptsDir)}/, one file per session.`);
@@ -126,6 +176,17 @@ function cmdStatus() {
     (agent) => AGENT_NAMES[agent] + (agent === 'claude-code' && isClaudePluginEnabled() ? ' (plugin)' : ''),
   );
   lines.push(`Agents:    ${agents.length > 0 ? agents.join(', ') : 'none (run "open-prompts install")'}`);
+  // The copy the hooks run is updated by "install" only, not when this package is.
+  const runtime = runtimeInfo();
+  if (runtime) {
+    const behind = runtime.version !== VERSION ? `, while this is ${VERSION}: run "open-prompts install" to update it` : '';
+    lines.push(`Hooks run: ${tildify(runtimeDir())} (open-prompts ${runtime.version}${behind})`);
+  }
+  // Hooks that point to a Node.js or a script that is gone fail on every prompt.
+  for (const agent of AGENTS.filter((name) => isAgentInstalled(name))) {
+    const missing = missingPaths(agent);
+    if (missing.length > 0) lines.push(`Broken:    ${AGENT_NAMES[agent]} runs ${missing.map(tildify).join(' and ')}, which no longer exist${missing.length === 1 ? 's' : ''}. Run "open-prompts install" again.`);
+  }
   lines.push(`Recording: ${isPaused() ? 'paused' : 'on'}`);
   lines.push(`State:     ${stateDir()}`);
   console.log(lines.join('\n'));
@@ -204,10 +265,14 @@ async function cmdUi(args) {
 function cmdValidate(args) {
   let targets = args;
   const problems = [];
+  // The prompts directory of a project that opted in may not exist yet: git keeps no empty
+  // directory, and it is created with the first prompt.
+  let optional = null;
   if (targets.length === 0) {
     const project = findProject(process.cwd());
     targets = [project ? project.promptsDir : DEFAULT_DIR];
     if (project) {
+      optional = project.promptsDir;
       try {
         readConfig(project.configPath);
       } catch (error) {
@@ -218,7 +283,7 @@ function cmdValidate(args) {
   let checked = 0;
   for (const target of targets) {
     if (!fs.existsSync(target)) {
-      problems.push(`${target}: not found`);
+      if (target !== optional) problems.push(`${target}: not found`);
       continue;
     }
     const files = fs.statSync(target).isDirectory() ? listFiles(target) : [target];
@@ -238,48 +303,202 @@ function cmdValidate(args) {
   }
 }
 
-/** Claude Code stores transcripts under projects/<path with every non-alphanumeric character as "-">. */
-function transcriptDir(root) {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  return path.join(configDir, 'projects', root.replace(/[^A-Za-z0-9]/g, '-'));
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * Lists what to read before committing: `file:line: reason: excerpt`. Exits with 1 when
+ * something is flagged. With --staged, only the records added in the staged changes.
+ */
+function cmdAudit(args) {
+  const staged = args.includes('--staged');
+  const targets = args.filter((arg) => !arg.startsWith('--'));
+  const project = findProject(process.cwd());
+  if (targets.length === 0 && !project) throw new UsageError('This directory has not opted in. Give the prompt files or directories to audit.');
+  let entries;
+  try {
+    if (staged) entries = stagedRecords(targets.length > 0 ? targets : [relative(project.promptsDir)]);
+    else entries = recordsOf(targets.length > 0 ? targets : [project.promptsDir].filter((dir) => fs.existsSync(dir)));
+  } catch (error) {
+    throw new UsageError(staged ? `audit --staged: ${error.message}` : error.message);
+  }
+  const findings = auditRecords(entries, { homePaths: project?.config.redact.homePaths ?? true });
+  for (const { file, line, reason, excerpt } of findings) console.log(`${relative(file)}:${line}: ${reason}: ${excerpt}`);
+  const what = staged ? `${plural(entries.length, 'staged record')}` : plural(entries.length, 'record');
+  if (findings.length === 0) {
+    console.log(`${what} checked, nothing flagged.`);
+    return;
+  }
+  const records = new Set(findings.map(({ file, line }) => `${file}:${line}`)).size;
+  console.log(`\n${plural(findings.length, 'finding')} in ${records} of ${what}. Read them, edit or delete the lines that should not be published, then commit. To delete a line, prefer "open-prompts ui": "open-prompts collect" adds back a line deleted by hand.`);
+  process.exitCode = 1;
 }
 
-function cmdImport(args) {
+/**
+ * Prompts per day, model, session and agent, from the project's prompt files. `--by` picks
+ * the groups (repeated or separated by commas), `--json` prints them for programs.
+ */
+function cmdStats(args) {
+  const project = requireProject();
+  const by = optionValues(args, '--by').flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean);
+  const unknown = by.find((group) => !STATS_GROUPS.includes(group));
+  if (unknown) throw new UsageError(`Unknown group "${unknown}" for --by. Groups: ${STATS_GROUPS.join(', ')}.`);
+  const records = listFiles(project.promptsDir).flatMap(readRecords);
+  const stats = promptStats(records, by.length > 0 ? { by } : {});
+  console.log(args.includes('--json') ? JSON.stringify(stats, null, 2) : formatStats(stats));
+}
+
+/** Every value of an option that can be repeated, such as `--source claude --source t3`. */
+function optionValues(args, name) {
+  const values = [];
+  args.forEach((arg, index) => {
+    if (arg === name) {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) throw new UsageError(`${name} needs a value`);
+      values.push(value);
+    } else if (arg.startsWith(`${name}=`)) values.push(arg.slice(name.length + 1));
+  });
+  return values;
+}
+
+/** The arguments that are not options or option values. */
+function positionals(args, withValues) {
+  return args.filter((arg, index) => !arg.startsWith('--') && !withValues.includes(args[index - 1]));
+}
+
+const SOURCE_LABELS = { claude: 'folders', codex: 'directories', gemini: 'projects' };
+
+/** One line per source: what it found for this repository. */
+function sourceSummary(report) {
+  const name = SOURCES[report.source];
+  if (report.status === 'unavailable') return `${name}: not read, ${report.note} (${report.location})`;
+  if (report.source === 't3') {
+    if (report.status === 'none' && !report.matched) return `${name}: not found (${report.location})`;
+    const projects = report.matched?.length ?? 0;
+    return `${name}: ${plural(report.threads ?? 0, 'thread')} in ${plural(projects, 'project')} of this repository (${report.location})`;
+  }
+  if (report.status === 'none' && !report.matched) return `${name}: no sessions (${report.location})`;
+  const sessions = (report.matched ?? []).reduce((total, group) => total + group.sessions, 0);
+  if (sessions === 0) return `${name}: no sessions of this repository (${report.location})`;
+  return `${name}: ${plural(sessions, 'session')} in ${report.matched.length} ${SOURCE_LABELS[report.source]} of ${report.location}`;
+}
+
+/** The folders or directories behind a source's summary, and why each one matched. */
+function sourceDetails(report) {
+  const lines = (report.matched ?? []).map(({ label, sessions, reason }) => `  ${label} (${plural(sessions, report.source === 't3' ? 'thread' : 'session')}): ${reason}`);
+  for (const { label, sessions, reason } of report.rejected ?? []) lines.push(`  not used: ${label} (${plural(sessions, 'session')}): ${reason}`);
+  return lines;
+}
+
+/** The notes after an import: when sources may hold more than what was found. */
+function importNotes({ identity, oldest, sources }) {
+  const notes = [];
+  const DAY = 24 * 60 * 60 * 1000;
+  if (identity.firstCommit && (!oldest || Date.parse(identity.firstCommit) < Date.parse(oldest) - DAY)) {
+    const since = identity.firstCommit.slice(0, 10);
+    const others = Object.keys(SOURCES).filter((name) => !sources.includes(name));
+    notes.push(
+      `The history of this repository starts on ${since}, ${oldest ? `but the oldest session found is from ${oldest.slice(0, 10)}` : 'and no session was found'}. ` +
+        `Older prompts may be on another machine, in a tool open-prompts does not read${others.length > 0 ? `, or in a source left out here (--source ${others.join(',')})` : ''}, or deleted by the agent.`,
+    );
+  }
+  if (sources.includes('claude')) {
+    const warning = claudeRetentionWarning();
+    if (warning && notes.length > 0) notes.push(warning);
+  }
+  return notes;
+}
+
+async function cmdImport(args) {
   const project = requireProject();
   const dryRun = args.includes('--dry-run');
-  const targets = args.filter((arg) => !arg.startsWith('--'));
-  if (targets.length === 0 && !args.includes('--all')) throw new UsageError('Give a session ID, a transcript file, or --all.');
-  const dir = transcriptDir(fs.realpathSync(project.root));
-  let transcripts;
-  if (args.includes('--all')) {
-    transcripts = fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).map((name) => path.join(dir, name)) : [];
-    if (transcripts.length === 0) throw new UsageError(`No Claude Code sessions found in ${dir}.`);
-  } else {
-    transcripts = targets.map((arg) => {
-      if (arg.endsWith('.jsonl') && fs.existsSync(arg)) return arg;
-      const candidate = path.join(dir, `${arg}.jsonl`);
-      if (fs.existsSync(candidate)) return candidate;
-      throw new UsageError(`No transcript for "${arg}" in ${dir}.`);
-    });
+  let sources;
+  try {
+    sources = parseSources(optionValues(args, '--source'));
+  } catch (error) {
+    throw new UsageError(error.message);
   }
-  let written = 0;
-  let skipped = 0;
-  for (const transcript of transcripts) {
-    const result = importTranscript(transcript, project, { dryRun });
-    written += result.written;
-    skipped += result.skipped;
-    if (dryRun) {
-      for (const record of result.records) {
-        console.log(`\n${record.timestamp} · ${record.model ?? 'unknown model'}`);
-        for (const line of record.prompt.split('\n')) console.log(`  ${line}`);
-      }
-    } else {
-      for (const file of result.files) console.log(`${relative(file)}`);
+  const targets = positionals(args, ['--source']);
+  if (targets.length === 0 && !args.includes('--all')) throw new UsageError('Give a session ID, a session file, or --all.');
+  const files = targets.filter((arg) => fs.existsSync(arg) && fs.statSync(arg).isFile()).map((arg) => path.resolve(arg));
+  const ids = targets.filter((arg) => !files.includes(path.resolve(arg)));
+  const plan = await planImport(project, { sources, files: files.length > 0 ? files : null, targets: args.includes('--all') ? null : ids.length > 0 ? ids : files.length > 0 ? [] : null });
+
+  for (const id of ids) {
+    if (plan.candidates.some((candidate) => candidate.session === id || (id.length >= 8 && candidate.session.startsWith(id)) || candidate.extensions?.x_thread === id)) continue;
+    const elsewhere = listTranscripts().find((transcript) => transcript.session === id);
+    throw new UsageError(
+      elsewhere
+        ? `Session "${id}" is in ${tildify(elsewhere.file)}, which does not belong to this repository. If it does, import the file: open-prompts import ${elsewhere.file}`
+        : `No session "${id}" of this repository in ${sources.map((name) => SOURCES[name]).join(', ')}.`,
+    );
+  }
+
+  if (files.length === 0) {
+    for (const report of plan.reports) {
+      console.log(sourceSummary(report));
+      if (dryRun) for (const line of sourceDetails(report)) console.log(line);
     }
   }
+  let written = 0;
+  let skipped = plan.duplicates;
+  let ignored = 0;
+  const writtenFiles = new Set();
+  for (const candidate of plan.write) {
+    // The agents' own files are the source of these records, so they do not go to the spool.
+    const result = writePrompt(project, candidate, { dryRun, spool: false });
+    if (result.action === 'recorded') {
+      written++;
+      writtenFiles.add(result.file);
+      if (dryRun) {
+        console.log(`\n${result.record.timestamp} · ${result.record.agent} · ${result.record.model ?? 'unknown model'} · ${result.record.session}`);
+        for (const line of result.record.prompt.split('\n')) console.log(`  ${line}`);
+      }
+    } else if (result.action === 'duplicate') skipped++;
+    else ignored++;
+  }
+  if (!dryRun && writtenFiles.size > 0) console.log(`\n${[...writtenFiles].map(relative).join('\n')}`);
   const verb = dryRun ? 'would be imported' : 'imported';
-  console.log(`\n${written} prompt${written === 1 ? '' : 's'} ${verb}${skipped ? `, ${skipped} already there` : ''}.`);
-  if (written > 0 && !dryRun) console.log('Read them before committing: redaction of secrets is best effort.');
+  const notes = [
+    skipped ? `${skipped} already there` : '',
+    plan.automated.length ? `${plan.automated.length} written by agents or hosts, skipped` : '',
+    ignored ? `${ignored} left out (empty, or listed in "ignore" or "ignoreCommands")` : '',
+  ].filter(Boolean);
+  console.log(`\n${plural(written, 'prompt')} ${verb}${notes.map((note) => `, ${note}`).join('')}.`);
+  if (written > 0 && !dryRun) console.log('Read them before committing, starting with what "open-prompts audit" lists: redaction of secrets is best effort.');
+  // The notes compare the whole history with every session found, so they only make sense with --all.
+  if (files.length === 0 && args.includes('--all')) for (const note of importNotes({ identity: plan.identity, oldest: plan.oldest, sources })) console.log(`\nNote: ${note}`);
+}
+
+/**
+ * Adds to this checkout's prompt files the records of the repository that the hooks wrote
+ * in other checkouts, such as a deleted worktree, and that are missing here. They come from
+ * the local spool in the state directory.
+ */
+function cmdCollect(args) {
+  const project = requireProject();
+  const dryRun = args.includes('--dry-run');
+  const result = collect(project, { dryRun });
+  for (const { file, record } of dryRun ? result.records : []) {
+    console.log(`${relative(file)} · ${record.timestamp} · ${record.agent} · ${record.model ?? 'unknown model'}`);
+    for (const line of record.prompt.split('\n')) console.log(`  ${line}`);
+    console.log('');
+  }
+  if (!dryRun && result.files.length > 0) console.log(`${result.files.map(relative).join('\n')}\n`);
+  const verb = dryRun ? 'would be added' : 'added';
+  const sessions = new Set(result.records.map(({ record }) => record.session)).size;
+  const notes = [result.present ? `${result.present} already there` : '', result.invalid ? `${plural(result.invalid, 'spooled line')} not valid, skipped` : ''].filter(Boolean);
+  console.log(`${plural(result.added, 'prompt')} ${verb}${result.added ? ` in ${plural(sessions, 'session')}` : ''}${notes.map((note) => `, ${note}`).join('')}.`);
+  if (result.added > 0 && !dryRun) console.log('Read them before committing, starting with what "open-prompts audit" lists.');
+  for (const [checkout, count] of result.live) {
+    console.log(`\nLeft out: ${plural(count, 'prompt')} of ${tildify(checkout)}, which still exists. Commit them there, or run "open-prompts collect" there.`);
+  }
+  for (const [file, count] of result.committed) {
+    console.log(`\nLeft out: ${plural(count, 'prompt')} of ${relative(file)}, which is in git already, in another branch or deleted from it. Adding the file here would stop git from bringing that branch in. Check out the branch and run "open-prompts collect" there.`);
+  }
+  if (!spoolEnabled(project)) {
+    const why = project.config.spool === false ? '"spool": false in .open-prompts.json' : 'OPEN_PROMPTS_SPOOL=off';
+    console.log(`\nNote: the spool is off here (${why}), so new prompts are not kept for collect.`);
+  }
 }
 
 function cmdPause(paused) {
@@ -294,26 +513,82 @@ function cmdPause(paused) {
   }
 }
 
+/**
+ * `--keep-transcripts [days]`: undefined when absent, else the number of days, or the
+ * default when no number follows.
+ */
+function keepTranscriptsOption(args) {
+  const index = args.indexOf('--keep-transcripts');
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) return CLAUDE_KEEP_DAYS;
+  if (!/^\d+$/.test(value) || Number(value) < 1) throw new UsageError('--keep-transcripts takes a whole number of days, 1 or more, such as --keep-transcripts 365');
+  return Number(value);
+}
+
+/** `--node <path>`: the Node.js the hooks should run with, checked. */
+function nodeOption(args) {
+  const value = optionValue(args, '--node');
+  if (value === undefined) return undefined;
+  const nodePath = path.resolve(value);
+  if (!fs.existsSync(nodePath)) throw new UsageError(`--node: ${value} does not exist`);
+  const major = nodeMajor(nodePath);
+  if (major === null) throw new UsageError(`--node: ${value} is not a Node.js that runs ("${value} --version" failed)`);
+  if (major < MIN_NODE_MAJOR) throw new UsageError(`--node: ${value} is Node.js ${major}, and the hooks need ${MIN_NODE_MAJOR} or later`);
+  return nodePath;
+}
+
+/**
+ * Adds the hooks. They run a copy of open-prompts in the data directory, not this one,
+ * which may be in a worktree or a cache that goes away, with a Node.js that stays in place.
+ */
 function cmdInstall(args) {
   const only = agentOption(args);
+  const keepDays = keepTranscriptsOption(args);
+  const chosenNode = nodeOption(args);
   const agents = only ? [only] : detectInstalledAgents();
   if (agents.length === 0) throw new UsageError(`No supported agent found on this machine. Use --agent with one of: ${AGENTS.join(', ')}.`);
+  const skipped = (agent) => agent === 'claude-code' && !only && isClaudePluginEnabled();
+  let runtime = null;
+  let node = null;
+  if (agents.some((agent) => !skipped(agent))) {
+    runtime = installRuntime(PACKAGE_ROOT);
+    node = chosenNode ? { nodePath: chosenNode, warning: null } : pickNode();
+  }
   for (const agent of agents) {
-    if (agent === 'claude-code' && !only && isClaudePluginEnabled()) {
+    if (skipped(agent)) {
       console.log(`${AGENT_NAMES[agent]}: skipped, the Open Prompts plugin already provides the hooks.`);
       continue;
     }
     try {
-      const note = installAgent(agent, { nodePath: process.execPath, scriptPath: SCRIPT_PATH });
+      const note = installAgent(agent, { nodePath: node.nodePath, scriptPath: runtime.scriptPath });
       console.log(`${AGENT_NAMES[agent]}: hooks added to ${configPath(agent)}.${note ? `\n  ${note}` : ''}`);
     } catch (error) {
       console.error(`${AGENT_NAMES[agent]}: ${error.message}`);
       process.exitCode = 1;
     }
   }
+  if (runtime) {
+    const where = `${runtime.copied ? `Copied open-prompts ${VERSION} to` : `open-prompts ${VERSION} is up to date in`} ${tildify(runtime.dir)}`;
+    console.log(`\n${where}. The hooks run it from there with ${tildify(node.nodePath)}.`);
+    if (node.warning) console.log(`\nWarning: ${node.warning}`);
+  }
+  // Claude Code deletes old transcripts, which "import" needs. Only an explicit flag changes that.
+  if (keepDays !== undefined) {
+    try {
+      console.log(`${AGENT_NAMES['claude-code']}: transcripts are kept for ${keepDays} days (cleanupPeriodDays in ${setClaudeRetention(keepDays)}).`);
+    } catch (error) {
+      console.error(`${AGENT_NAMES['claude-code']}: ${error.message}`);
+      process.exitCode = 1;
+    }
+  } else if (agents.includes('claude-code')) {
+    const warning = claudeRetentionWarning();
+    if (warning) console.log(`\nNote: ${warning}`);
+  }
   console.log('\nPrompts are recorded only in repositories where you ran "open-prompts init".');
 }
 
+/** Removes the hooks. For every agent, also removes the copy the hooks ran. */
 function cmdUninstall(args) {
   const only = agentOption(args);
   for (const agent of only ? [only] : AGENTS) {
@@ -324,6 +599,13 @@ function cmdUninstall(args) {
       console.error(`${AGENT_NAMES[agent]}: ${error.message}`);
       process.exitCode = 1;
     }
+  }
+  if (only || process.exitCode) return;
+  try {
+    if (removeRuntime()) console.log(`Removed the copy of open-prompts in ${tildify(runtimeDir())}.`);
+  } catch (error) {
+    console.error(`Could not remove ${runtimeDir()}: ${error.message}`);
+    process.exitCode = 1;
   }
 }
 
@@ -407,7 +689,10 @@ const COMMANDS = {
   show: cmdShow,
   ui: cmdUi,
   validate: cmdValidate,
+  audit: cmdAudit,
+  stats: cmdStats,
   import: cmdImport,
+  collect: cmdCollect,
   pause: () => cmdPause(true),
   resume: () => cmdPause(false),
   install: cmdInstall,

@@ -3,7 +3,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { claudeConfigDir } from './agents/claude-code.mjs';
+import { codexHome } from './agents/codex.mjs';
 import { copilotHome } from './agents/copilot.mjs';
 
 export const AGENTS = ['claude-code', 'codex', 'cursor', 'gemini-cli', 'copilot', 'opencode', 'mistral-vibe'];
@@ -19,8 +21,8 @@ export const AGENT_NAMES = {
 };
 
 const home = () => os.homedir();
-const claudeDir = (env) => env.CLAUDE_CONFIG_DIR || path.join(home(), '.claude');
-const codexDir = (env) => env.CODEX_HOME || path.join(home(), '.codex');
+const claudeDir = (env) => claudeConfigDir(env);
+const codexDir = (env) => codexHome(env);
 const vibeDir = (env) => env.VIBE_HOME || path.join(home(), '.vibe');
 const opencodeDir = (env) => env.OPENCODE_CONFIG_DIR || path.join(env.XDG_CONFIG_HOME || path.join(home(), '.config'), 'opencode');
 
@@ -65,8 +67,41 @@ export function detectInstalledAgents(env = process.env) {
 
 const quote = (value) => (process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`);
 const shellCommand = ({ nodePath, scriptPath }, agent) => `${quote(nodePath)} ${quote(scriptPath)} hook --agent ${agent}`;
+// Any path ending in bin/open-prompts: the runtime copy, and the global or local installs
+// earlier versions pointed to, so that a new install replaces their entries.
 const OUR_COMMAND = /[\\/]bin[\\/]open-prompts['"]?\s+hook\b/;
 const isOurCommand = (value) => typeof value === 'string' && OUR_COMMAND.test(value);
+
+/**
+ * Splits a command written by shellCommand back into its words: single quotes (with the
+ * `'\\''` escape), double quotes and backslashes are handled as a POSIX shell would.
+ */
+export function splitCommand(command) {
+  const words = [];
+  let word = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (char === "'" || char === '"') {
+      const end = command.indexOf(char, i + 1);
+      if (end < 0) return words;
+      word = (word ?? '') + command.slice(i + 1, end);
+      i = end;
+    } else if (char === '\\' && process.platform !== 'win32' && i + 1 < command.length) {
+      word = (word ?? '') + command[++i];
+    } else if (/\s/.test(char)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else word = (word ?? '') + char;
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** The Node.js and script of one of our shell commands. */
+const commandPaths = (command) => {
+  const [nodePath, scriptPath] = splitCommand(command);
+  return { nodePath, scriptPath };
+};
 
 // Claude Code entries run `<node> <...>/bin/open-prompts hook` in exec form.
 const isOurClaudeHook = (hook) =>
@@ -281,6 +316,54 @@ export function isAgentInstalled(agent, env = process.env) {
   }
 }
 
+/** Our hooks in a `{ hooks: { Event: [group...] } }` map, as a flat list. */
+const nestedHooks = (config, isOurs) =>
+  Object.values(config.hooks ?? {}).flatMap((groups) => (Array.isArray(groups) ? groups.flatMap((group) => (group.hooks ?? []).filter(isOurs)) : []));
+
+/**
+ * The Node.js and script paths our installed hooks run for `agent`, as [{ nodePath, scriptPath }].
+ * OpenCode runs the plugin in its own runtime, so only the script is known.
+ */
+export function installedPaths(agent, env = process.env) {
+  const file = configPath(agent, env);
+  if (!fs.existsSync(file)) return [];
+  try {
+    if (agent === 'opencode') {
+      const url = /import\(("file:[^"]+")\)/.exec(fs.readFileSync(file, 'utf8'))?.[1];
+      return url ? [{ nodePath: null, scriptPath: fileURLToPath(JSON.parse(url)) }] : [];
+    }
+    if (agent === 'mistral-vibe') {
+      const block = VIBE_BLOCK.exec(fs.readFileSync(file, 'utf8'))?.[0] ?? '';
+      const command = /^command = (".*")$/m.exec(block)?.[1];
+      return command ? [commandPaths(JSON.parse(command))] : [];
+    }
+    const config = readJson(file);
+    if (agent === 'claude-code') {
+      return nestedHooks(config, isOurClaudeHook).map((hook) => ({ nodePath: hook.command, scriptPath: hook.args.find((arg) => /[\\/]bin[\\/]open-prompts$/.test(String(arg))) }));
+    }
+    if (agent === 'copilot') return (config.hooks?.userPromptSubmitted ?? []).filter((entry) => typeof entry?.bash === 'string').map((entry) => commandPaths(entry.bash));
+    if (agent === 'cursor') return (config.hooks?.beforeSubmitPrompt ?? []).filter((entry) => isOurCommand(entry?.command)).map((entry) => commandPaths(entry.command));
+    return nestedHooks(config, TARGETS[agent].isOurs).filter((hook) => typeof hook.command === 'string').map((hook) => commandPaths(hook.command));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The paths our hooks for `agent` run that no longer exist, such as a Node.js removed by a
+ * version manager or a deleted worktree. A bare command such as `node` is looked up in the
+ * PATH by the agent, so it is not checked.
+ */
+export function missingPaths(agent, env = process.env) {
+  const missing = new Set();
+  for (const { nodePath, scriptPath } of installedPaths(agent, env)) {
+    for (const file of [nodePath, scriptPath]) {
+      if (typeof file === 'string' && /[\\/]/.test(file) && !fs.existsSync(file)) missing.add(file);
+    }
+  }
+  return [...missing];
+}
+
 /** Whether the Open Prompts plugin is enabled in Claude Code. */
 export function isClaudePluginEnabled(env = process.env) {
   try {
@@ -289,4 +372,50 @@ export function isClaudePluginEnabled(env = process.env) {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// How long Claude Code keeps its transcripts
+
+/** Claude Code deletes transcripts older than this many days unless cleanupPeriodDays says otherwise. */
+export const CLAUDE_DEFAULT_CLEANUP_DAYS = 30;
+/** Below this, `install` warns that `import` may find little: transcripts are the main source of past prompts. */
+export const CLAUDE_CLEANUP_WARN_DAYS = 90;
+/** What `--keep-transcripts` writes when no number of days is given. */
+export const CLAUDE_KEEP_DAYS = 365;
+
+/**
+ * Claude Code's cleanupPeriodDays: { days, set, file }, where `days` is the period in effect
+ * (the default when the setting is missing) and `set` tells whether the setting is there.
+ */
+export function claudeRetention(env = process.env) {
+  const file = configPath('claude-code', env);
+  let value;
+  try {
+    value = readJson(file).cleanupPeriodDays;
+  } catch {
+    value = undefined;
+  }
+  const set = typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  return { days: set ? value : CLAUDE_DEFAULT_CLEANUP_DAYS, set, file };
+}
+
+/**
+ * A warning about Claude Code's retention, or null when transcripts are kept long enough.
+ * Recording does not need transcripts, but `import` does, to find what was typed before.
+ */
+export function claudeRetentionWarning(env = process.env) {
+  const { days, set, file } = claudeRetention(env);
+  if (days >= CLAUDE_CLEANUP_WARN_DAYS) return null;
+  const now = set ? `cleanupPeriodDays is ${days} in ${file}` : `${file} has no cleanupPeriodDays, so the default applies`;
+  const effect = days === 0 ? 'Claude Code keeps no transcripts' : `Claude Code deletes transcripts after ${days} days`;
+  return `${effect} (${now}). "open-prompts import" reads them to find past prompts. To keep them longer, run "open-prompts install --agent claude-code --keep-transcripts" (${CLAUDE_KEEP_DAYS} days) or add "cleanupPeriodDays": <days> to that file.`;
+}
+
+/** Writes cleanupPeriodDays into Claude Code's settings, keeping the rest and a backup. */
+export function setClaudeRetention(days, env = process.env) {
+  if (!Number.isInteger(days) || days < 1) throw new Error('--keep-transcripts takes a whole number of days, 1 or more');
+  const file = configPath('claude-code', env);
+  writeJson(file, { ...readJson(file), cleanupPeriodDays: days });
+  return file;
 }

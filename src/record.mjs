@@ -7,8 +7,11 @@ const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{
 const KNOWN_FIELDS = new Set(['v', 'id', 'timestamp', 'agent', 'agent_version', 'model', 'session', 'prompt']);
 export const FILE_NAME_RE = /^\d{4}-\d{2}-\d{2}-[A-Za-z0-9_-]+\.jsonl$/;
 
-/** Builds a record with fields in the order the spec recommends. */
-export function makeRecord({ id, timestamp, agent, agentVersion, model, session, prompt }) {
+/**
+ * Builds a record with fields in the order the spec recommends, then the extension
+ * fields of `extensions`. Only names starting with `x_` are kept, and undefined values are left out.
+ */
+export function makeRecord({ id, timestamp, agent, agentVersion, model, session, prompt, extensions }) {
   const record = { v: SPEC_VERSION };
   if (id) record.id = id;
   record.timestamp = timestamp ?? new Date().toISOString();
@@ -17,6 +20,9 @@ export function makeRecord({ id, timestamp, agent, agentVersion, model, session,
   record.model = model ?? null;
   record.session = session;
   record.prompt = prompt;
+  for (const [key, value] of Object.entries(extensions ?? {})) {
+    if (key.startsWith('x_') && value !== undefined) record[key] = value;
+  }
   return record;
 }
 

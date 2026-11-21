@@ -52,7 +52,7 @@ export function createHooks({ client, directory, env = process.env, now = () => 
       id: message?.id,
       timestamp: (typeof created === 'number' ? new Date(created) : now()).toISOString(),
       prompt,
-    });
+    }, { env });
   }
 
   const fail = (error) => logError(stateDir(env), error);
