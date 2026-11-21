@@ -6,7 +6,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { fileSize, ignored, poll, readFirstJsonLine, readJsonlFrom, readJsonlTail, realModel, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
+import { fileSize, ignored, poll, projectIgnores, readFirstJsonLine, readJsonlFrom, readJsonlTail, realModel, redactOptions, resolveProject, waitMsFrom, writePrompt } from '../core.mjs';
 import { redact } from '../redact.mjs';
 
 export const AGENT = 'copilot';
@@ -63,10 +63,13 @@ export async function handle(input, { env = process.env, now = new Date() } = {}
   if (!project) return ignored(reason);
   const timestamp =
     typeof input.timestamp === 'number' ? new Date(input.timestamp).toISOString() : typeof input.timestamp === 'string' ? input.timestamp : now.toISOString();
+  // Checked here too, so that the pending file never holds a prompt the project leaves out.
+  const skip = projectIgnores(project, input.prompt.trim());
+  if (skip) return ignored(skip);
   const events = eventsFile(session, env);
   return {
     action: 'deferred',
-    payload: { cwd: input.cwd, session, timestamp, prompt: redact(input.prompt.trim()).text, events, offset: fileSize(events) },
+    payload: { cwd: input.cwd, session, timestamp, prompt: redact(input.prompt.trim(), redactOptions(project)).text, events, offset: fileSize(events) },
   };
 }
 
@@ -81,5 +84,5 @@ export async function complete(payload, { env = process.env, waitMs = waitMsFrom
     session: payload.session,
     timestamp: payload.timestamp,
     prompt: payload.prompt,
-  });
+  }, { env });
 }

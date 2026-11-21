@@ -10,11 +10,12 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPaused } from '../core.mjs';
+import { isPaused, redactOptions } from '../core.mjs';
 import { validateFileContent } from '../record.mjs';
 import { redact } from '../redact.mjs';
 import { stateDir } from '../state.mjs';
-import { listFiles, rewriteLine } from '../store.mjs';
+import { updateSpooled } from '../spool.mjs';
+import { listFiles, readRecords, rewriteLine } from '../store.mjs';
 import { createContributors } from './contributors.mjs';
 import { ICON_TYPES, findProjectIcon } from './project-icon.mjs';
 
@@ -64,7 +65,6 @@ function gitChanges(project) {
 
 // Recording already redacts every prompt. An edit made here is redacted again, with the
 // project's settings, since its text does not go through recording.
-const redactOptionsOf = (project) => project.config.redact ?? {};
 
 /** The prompts, problems and session summary of one prompt file. */
 function readPromptFile(file) {
@@ -186,24 +186,36 @@ function referencedLine(project, ref) {
   return { file, text };
 }
 
-function editPrompt(project, body) {
+// Edits and deletions also change the copy in the local spool, so that "open-prompts collect"
+// does not bring back what a person removed.
+
+function editPrompt(project, body, env) {
   const { file, text } = referencedLine(project, body);
   if (typeof body.prompt !== 'string' || body.prompt.trim() === '') throw new HttpError(400, 'A prompt cannot be empty. Delete it instead.');
-  const { text: prompt, kinds } = redact(body.prompt.replace(/\r\n?/g, '\n'), redactOptionsOf(project));
+  const { text: prompt, kinds } = redact(body.prompt.replace(/\r\n?/g, '\n'), redactOptions(project));
   const record = JSON.parse(text);
   record.prompt = prompt;
   if (!rewriteLine(file, body.line, text, JSON.stringify(record))) throw new HttpError(409, 'This prompt changed on disk. Try again.');
+  updateSpooled(project, record, record, env);
   return { redacted: [...new Set(kinds)] };
 }
 
-function deletePrompt(project, body) {
+function deletePrompt(project, body, env) {
   const { file, text } = referencedLine(project, body);
   if (!rewriteLine(file, body.line, text, null)) throw new HttpError(409, 'This prompt changed on disk. Try again.');
+  try {
+    updateSpooled(project, JSON.parse(text), null, env);
+  } catch {
+    // A line that is not JSON has no copy in the spool.
+  }
   return { removedFile: !fs.existsSync(file) };
 }
 
-function deleteSession(project, body) {
-  fs.rmSync(promptFile(project, body.file));
+function deleteSession(project, body, env) {
+  const file = promptFile(project, body.file);
+  const records = readRecords(file);
+  fs.rmSync(file);
+  for (const record of records) updateSpooled(project, record, null, env);
   return {};
 }
 
@@ -319,11 +331,11 @@ export function startServer(project, { port = 0, host = '127.0.0.1', env = proce
           req.on('close', () => clients.delete(res));
           return;
         case 'PATCH /api/prompt':
-          return json(200, editPrompt(project, await readJsonBody(req)));
+          return json(200, editPrompt(project, await readJsonBody(req), env));
         case 'DELETE /api/prompt':
-          return json(200, deletePrompt(project, await readJsonBody(req)));
+          return json(200, deletePrompt(project, await readJsonBody(req), env));
         case 'DELETE /api/session':
-          return json(200, deleteSession(project, await readJsonBody(req)));
+          return json(200, deleteSession(project, await readJsonBody(req), env));
         case 'PUT /api/recording':
           return json(200, setRecording(env, await readJsonBody(req)));
         default:

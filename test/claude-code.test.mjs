@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { cleanPrompt, detectVersion, extractPrompts, handle as handleHook, importTranscript, replyModel } from '../src/agents/claude-code.mjs';
+import { cleanPrompt, detectVersion, extractPrompts, handle as handleHook, replyModel } from '../src/agents/claude-code.mjs';
 import { findProject } from '../src/project.mjs';
-import { optedInRepo, readJsonl, tempDir } from './helpers.mjs';
+import { importFile, optedInRepo, readJsonl, tempDir } from './helpers.mjs';
 
 const SESSION = '234908e6-56a5-49e3-b055-a161f39d736f';
 const NOW = new Date('2026-11-20T15:48:02.123Z');
@@ -146,13 +146,39 @@ test('extractPrompts keeps only what a person typed', async () => {
     extractPrompts(entries).map(({ id, prompt, model }) => ({ id, prompt, model })),
     [
       { id: 'p1', prompt: 'first prompt', model: 'claude-opus-5-5' },
-      { id: 'p2', prompt: '/ship --fast', model: null },
+      { id: 'p2', prompt: '/ship --fast', model: 'claude-opus-5-5' },
       { id: 'p3', prompt: 'what is in this screenshot?', model: 'claude-sonnet-5-5' },
     ],
   );
 });
 
-test('importTranscript writes records and does not duplicate them', async () => {
+test('extractPrompts gives a turn cut short the model used before it, else the one after it', () => {
+  const base = { sessionId: SESSION, version: '2.1.328', isSidechain: false };
+  const user = (promptId, content) => ({ ...base, type: 'user', promptId, timestamp: '2026-11-20T10:00:00Z', message: { role: 'user', content } });
+  const reply = (model, extra = {}) => ({ ...base, type: 'assistant', message: { model }, ...extra });
+  const entries = [
+    user('p1', 'interrupted before any reply'),
+    user('p2', 'answered'),
+    reply('claude-sonnet-5-5'),
+    reply('claude-haiku-5-5', { isSidechain: true }),
+    user('p3', 'interrupted again'),
+    reply('<synthetic>'),
+    user('p4', 'after a model switch'),
+    reply('claude-opus-5-5'),
+  ];
+  assert.deepEqual(
+    extractPrompts(entries).map(({ id, model }) => [id, model]),
+    [
+      ['p1', 'claude-sonnet-5-5'],
+      ['p2', 'claude-sonnet-5-5'],
+      ['p3', 'claude-sonnet-5-5'],
+      ['p4', 'claude-opus-5-5'],
+    ],
+  );
+  assert.equal(extractPrompts([user('p1', 'no reply at all')])[0].model, null);
+});
+
+test('importing a transcript writes records and does not duplicate them', async () => {
   const { root, promptsDir } = optedInRepo();
   const project = findProject(root);
   const transcript = path.join(tempDir(), `${SESSION}.jsonl`);
@@ -161,8 +187,8 @@ test('importTranscript writes records and does not duplicate them', async () => 
     { type: 'assistant', sessionId: SESSION, message: { model: 'claude-opus-5-5' } },
   ];
   fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n'));
-  assert.equal(importTranscript(transcript, project).written, 1);
-  assert.deepEqual(importTranscript(transcript, project), { written: 0, skipped: 1, files: [path.join(promptsDir, '2026-11-20-234908e6.jsonl')], records: [] });
+  assert.equal((await importFile(project, transcript)).written, 1);
+  assert.deepEqual(await importFile(project, transcript), { written: 0, skipped: 1, ignored: 0, files: [], records: [] });
   assert.deepEqual(readJsonl(path.join(promptsDir, '2026-11-20-234908e6.jsonl')), [
     { v: 1, id: 'p1', timestamp: '2026-11-20T10:00:00Z', agent: 'claude-code', agent_version: '2.1.328', model: 'claude-opus-5-5', session: SESSION, prompt: 'hello' },
   ]);
@@ -248,11 +274,11 @@ test('the hook skips host notifications and unwraps context handoffs', async () 
   assert.equal((await submit('Context handoff (x):\nonly a summary')).action, 'ignored');
 });
 
-test('importTranscript with dryRun writes nothing', () => {
+test('importing a transcript with dryRun writes nothing', async () => {
   const { root, promptsDir } = optedInRepo();
   const transcript = path.join(tempDir(), `${SESSION}.jsonl`);
   fs.writeFileSync(transcript, JSON.stringify({ type: 'user', sessionId: SESSION, promptId: 'p1', timestamp: '2026-11-20T10:00:00Z', message: { role: 'user', content: 'hello' } }) + '\n');
-  const result = importTranscript(transcript, findProject(root), { dryRun: true });
+  const result = await importFile(findProject(root), transcript, { dryRun: true });
   assert.equal(result.written, 1);
   assert.equal(result.records[0].prompt, 'hello');
   assert.equal(fs.existsSync(promptsDir), false);

@@ -41,7 +41,7 @@ export async function handle(input, { env = process.env, now = new Date() } = {}
     id: input.generation_id,
     timestamp: now.toISOString(),
     prompt: input.prompt,
-  });
+  }, { env });
 }
 
 /** beforeSubmitPrompt expects an answer. Saying nothing would count as a failed hook. */
